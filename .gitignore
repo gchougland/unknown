@@ -1,0 +1,54 @@
+# General
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Build artifacts
+Project/Unknown/Binaries/
+Project/Unknown/Intermediate/
+Project/Unknown/Saved/
+Project/Unknown/DerivedDataCache/
+
+# User-specific files
+*.VC.db
+*.VC.opendb
+*.sln
+*.suo
+*.user
+*.opensdf
+*.sdf
+
+# Logs and crash reports
+*.log
+*.dmp
+
+# Backups
+*.autosave
+Project/Unknown/Backup/
+Project/Unknown/Saved/Backup/
+
+# Config override backups
+*.ini.tmp
+*.ini.bak
+
+# Generated project files
+Project/Unknown/Build/Android/src/
+Project/Unknown/Build/IOS/build/
+Project/Unknown/Build/IOS/Intermediate/
+
+# Binary assets cache
+Project/Unknown/Content/Collections/*/*.collection.bin
+
+# IDE
+Project/Unknown/.vs/
+Project/Unknown/.idea/
+
+# Platform specific
+Project/Unknown/Android/obj/
+Project/Unknown/Android/bin/
+Project/Unknown/IOS/App/App.xcodeproj/xcuserdata/
+
+# Unreal Engine launcher data
+Project/Unknown/Content/Developers/
+Project/Unknown/Saved/Config/Windows/EditorPerProjectUserSettings.ini
+
