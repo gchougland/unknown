@@ -28,7 +28,8 @@ AFirstPersonPlayerController::AFirstPersonPlayerController(const FObjectInitiali
 	InteractAction = CreateDefaultSubobject<UInputAction>(TEXT("FP_InteractAction"));
 	RotateHeldAction = CreateDefaultSubobject<UInputAction>(TEXT("FP_RotateHeldAction"));
 	ThrowAction = CreateDefaultSubobject<UInputAction>(TEXT("FP_ThrowAction"));
-
+	FlashlightAction = CreateDefaultSubobject<UInputAction>(TEXT("FP_FlashlightAction"));
+	
 	// Value types
 	if (MoveAction) MoveAction->ValueType = EInputActionValueType::Axis2D;
 	if (LookAction) LookAction->ValueType = EInputActionValueType::Axis2D;
@@ -38,7 +39,8 @@ AFirstPersonPlayerController::AFirstPersonPlayerController(const FObjectInitiali
 	if (InteractAction) InteractAction->ValueType = EInputActionValueType::Boolean;
 	if (RotateHeldAction) RotateHeldAction->ValueType = EInputActionValueType::Boolean;
 	if (ThrowAction) ThrowAction->ValueType = EInputActionValueType::Boolean;
-
+	if (FlashlightAction) FlashlightAction->ValueType = EInputActionValueType::Boolean;
+	
 	// Basic mappings (mouse + simple keys)
 	if (DefaultMappingContext && LookAction)
 	{
@@ -67,6 +69,10 @@ AFirstPersonPlayerController::AFirstPersonPlayerController(const FObjectInitiali
 	if (DefaultMappingContext && ThrowAction)
 	{
 		DefaultMappingContext->MapKey(ThrowAction, EKeys::LeftMouseButton);
+	}
+	if (DefaultMappingContext && FlashlightAction)
+	{
+		DefaultMappingContext->MapKey(FlashlightAction, EKeys::F);
 	}
 }
 
@@ -132,6 +138,10 @@ void AFirstPersonPlayerController::SetupInputComponent()
 		if (ThrowAction)
 		{
 			EIC->BindAction(ThrowAction, ETriggerEvent::Started, this, &AFirstPersonPlayerController::OnThrow);
+		}
+		if (FlashlightAction)
+		{
+			EIC->BindAction(FlashlightAction, ETriggerEvent::Started, this, &AFirstPersonPlayerController::OnFlashlightToggle);
 		}
 	}
 }
@@ -375,6 +385,14 @@ void AFirstPersonPlayerController::OnThrow(const FInputActionValue& Value)
 			bRotateHeld = false;
 			PIC->SetRotateHeld(false);
 		}
+	}
+}
+
+void AFirstPersonPlayerController::OnFlashlightToggle(const FInputActionValue& Value)
+{
+	if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
+	{
+		C->ToggleFlashlight();
 	}
 }
 

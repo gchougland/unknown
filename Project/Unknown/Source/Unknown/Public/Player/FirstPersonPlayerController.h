@@ -57,6 +57,7 @@ protected:
 	void OnRotateHeldPressed(const struct FInputActionValue& Value);
 	void OnRotateHeldReleased(const struct FInputActionValue& Value);
 	void OnThrow(const struct FInputActionValue& Value);
+	void OnFlashlightToggle(const struct FInputActionValue& Value);
 
 	// Code-defined Enhanced Input assets
 	UPROPERTY()
@@ -78,6 +79,8 @@ protected:
  TObjectPtr<class UInputAction> RotateHeldAction;
  UPROPERTY()
  TObjectPtr<class UInputAction> ThrowAction;
+ UPROPERTY()
+ TObjectPtr<class UInputAction> FlashlightAction;
 
  // Internal state: whether RMB is currently held for rotating a held object
  bool bRotateHeld = false;

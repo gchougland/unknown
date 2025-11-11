@@ -6,6 +6,7 @@
 
 class UCameraComponent;
 class UPhysicsInteractionComponent;
+class USpotLightComponent;
 
 #include "FirstPersonCharacter.generated.h"
 
@@ -31,6 +32,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Movement")
 	void ToggleCrouch();
 
+	// Toggle the flashlight (F key)
+	UFUNCTION(BlueprintCallable, Category="Equipment")
+	void ToggleFlashlight();
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -47,6 +52,10 @@ protected:
 	// Camera used for first-person view
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Camera", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<UCameraComponent> FirstPersonCamera;
+
+	// Flashlight spotlight attached to the camera
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Equipment", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<USpotLightComponent> Flashlight;
 
 	// Interaction component used for physics interactions
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Interaction", meta=(AllowPrivateAccess="true"))

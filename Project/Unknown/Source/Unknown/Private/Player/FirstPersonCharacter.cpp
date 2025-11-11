@@ -2,6 +2,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Camera/CameraComponent.h"
 #include "Components/PhysicsInteractionComponent.h"
+#include "Components/SpotLightComponent.h"
 
 AFirstPersonCharacter::AFirstPersonCharacter(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -11,6 +12,22 @@ AFirstPersonCharacter::AFirstPersonCharacter(const FObjectInitializer& ObjectIni
 	FirstPersonCamera->SetupAttachment(GetRootComponent());
 	FirstPersonCamera->bUsePawnControlRotation = true;
 	FirstPersonCamera->SetRelativeLocation(FVector(0.f, 0.f, BaseEyeHeight));
+
+	// Create a flashlight (spotlight) attached to the camera
+	Flashlight = CreateDefaultSubobject<USpotLightComponent>(TEXT("Flashlight"));
+	if (Flashlight)
+	{
+		Flashlight->SetupAttachment(FirstPersonCamera);
+		Flashlight->SetRelativeLocation(FVector(10.f, 0.f, -5.f));
+		Flashlight->Intensity = 200.f;
+		Flashlight->AttenuationRadius = 2000.f;
+		Flashlight->InnerConeAngle = 15.f;
+		Flashlight->OuterConeAngle = 45.f;
+		Flashlight->bUseInverseSquaredFalloff = false; // more controllable for a flashlight feel
+		Flashlight->SetUseTemperature(true);
+		Flashlight->Temperature = 4000.f;
+		Flashlight->SetVisibility(false);
+	}
 
 	// Create physics interaction component
 	PhysicsInteraction = CreateDefaultSubobject<UPhysicsInteractionComponent>(TEXT("PhysicsInteraction"));
@@ -84,6 +101,14 @@ void AFirstPersonCharacter::ToggleCrouch()
 		{
 			UnCrouch();
 		}
+	}
+}
+
+void AFirstPersonCharacter::ToggleFlashlight()
+{
+	if (Flashlight)
+	{
+		Flashlight->SetVisibility(!Flashlight->IsVisible());
 	}
 }
 
