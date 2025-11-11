@@ -12,8 +12,8 @@ public class Unknown : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] { "PhysicsCore" });
 
-		// Uncomment if you are using Slate UI
-		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
+		// UI dependencies for runtime drawing of selection box via UMG/Slate
+		PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore", "UMG" });
 		
 		// Uncomment if you are using online features
 		// PrivateDependencyModuleNames.Add("OnlineSubsystem");

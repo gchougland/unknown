@@ -10,6 +10,8 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
 #include "Engine/EngineTypes.h"
+#include "UI/InteractHighlightWidget.h"
+#include "Blueprint/WidgetLayoutLibrary.h"
 
 AFirstPersonPlayerController::AFirstPersonPlayerController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -94,6 +96,47 @@ void AFirstPersonPlayerController::BeginPlay()
 	{
 		PlayerCameraManager->ViewPitchMin = -89.f;
 		PlayerCameraManager->ViewPitchMax = 89.f;
+	}
+
+	// Create and add the interact highlight widget (full-screen overlay)
+	if (!InteractHighlightWidget)
+	{
+		InteractHighlightWidget = CreateWidget<UInteractHighlightWidget>(this, UInteractHighlightWidget::StaticClass());
+		if (InteractHighlightWidget)
+		{
+			InteractHighlightWidget->AddToViewport(1000); // high Z-order to render above HUD
+			// Fill the entire viewport so our paint coordinates map 1:1 to screen space
+			InteractHighlightWidget->SetAnchorsInViewport(FAnchors(0.f, 0.f, 1.f, 1.f));
+			InteractHighlightWidget->SetAlignmentInViewport(FVector2D(0.f, 0.f));
+			// Keep widget always present but non-blocking; use SetVisible() only for the highlight border
+			InteractHighlightWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
+			InteractHighlightWidget->SetVisible(false);
+		}
+	}
+
+	// Bind to physics interaction state to hide highlight while holding
+	if (AFirstPersonCharacter* C0 = Cast<AFirstPersonCharacter>(GetPawn()))
+	{
+		if (UPhysicsInteractionComponent* PIC0 = C0->FindComponentByClass<UPhysicsInteractionComponent>())
+		{
+			TWeakObjectPtr<AFirstPersonPlayerController> WeakThis(this);
+			PIC0->OnPickedUp.AddLambda([WeakThis](UPrimitiveComponent* /*Comp*/, const FVector& /*Pivot*/)
+			{
+				if (WeakThis.IsValid() && WeakThis->InteractHighlightWidget)
+				{
+					WeakThis->InteractHighlightWidget->SetVisible(false);
+				}
+			});
+			// On release/throw we don't force-show; next tick will recompute normally
+			PIC0->OnReleased.AddLambda([](UPrimitiveComponent* /*Comp*/)
+			{
+				// no-op
+			});
+			PIC0->OnThrown.AddLambda([](UPrimitiveComponent* /*Comp*/, const FVector& /*Dir*/)
+			{
+				// no-op
+			});
+		}
 	}
 
 	// Lock input to game only and hide cursor for FPS
@@ -263,15 +306,96 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 	}
 
 	// Update hold target for physics interaction so held object follows view
+	UPhysicsInteractionComponent* PIC = nullptr;
 	if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
 	{
-		if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
+		PIC = C->FindComponentByClass<UPhysicsInteractionComponent>();
+		if (PIC && PIC->IsHolding())
 		{
-			if (PIC->IsHolding())
+			FVector CamLoc; FRotator CamRot;
+			GetPlayerViewPoint(CamLoc, CamRot);
+			PIC->UpdateHoldTarget(CamLoc, CamRot.Vector());
+		}
+	}
+
+	// Compute screen-space selection rect for current interactable under crosshair
+	if (InteractHighlightWidget)
+	{
+		// Suppress highlight while holding a physics object
+		if (PIC && PIC->IsHolding())
+		{
+			InteractHighlightWidget->SetVisible(false);
+		}
+		else
+		{
+			bool bHasTarget = false;
+			FVector2D TL(0, 0), BR(0, 0);
+
+			FVector CamLoc; FRotator CamRot;
+			GetPlayerViewPoint(CamLoc, CamRot);
+			const FVector Dir = CamRot.Vector();
+			const float MaxDist = (PIC ? PIC->GetMaxPickupDistance() : 300.f);
+			const FVector Start = CamLoc;
+			const FVector End = Start + Dir * MaxDist;
+
+			FHitResult Hit;
+			FCollisionQueryParams Params(SCENE_QUERY_STAT(InteractHighlight), /*bTraceComplex*/ false);
+			if (APawn* PawnToIgnore = GetPawn()) { Params.AddIgnoredActor(PawnToIgnore); }
+
+			if (GetWorld() && GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
 			{
-				FVector CamLoc; FRotator CamRot;
-				GetPlayerViewPoint(CamLoc, CamRot);
-				PIC->UpdateHoldTarget(CamLoc, CamRot.Vector());
+				UPrimitiveComponent* Prim = Hit.GetComponent();
+				if (Prim)
+				{
+					const FBoxSphereBounds& B = Prim->Bounds;
+					const FVector Ctr = B.Origin;
+					const FVector Ext = B.BoxExtent;
+					FVector Corners[8] = {
+						Ctr + FVector(-Ext.X, -Ext.Y, -Ext.Z),
+						Ctr + FVector( Ext.X, -Ext.Y, -Ext.Z),
+						Ctr + FVector(-Ext.X,  Ext.Y, -Ext.Z),
+						Ctr + FVector( Ext.X,  Ext.Y, -Ext.Z),
+						Ctr + FVector(-Ext.X, -Ext.Y,  Ext.Z),
+						Ctr + FVector( Ext.X, -Ext.Y,  Ext.Z),
+						Ctr + FVector(-Ext.X,  Ext.Y,  Ext.Z),
+						Ctr + FVector( Ext.X,  Ext.Y,  Ext.Z)
+					};
+
+					FVector2D MinPt(FLT_MAX, FLT_MAX), MaxPt(-FLT_MAX, -FLT_MAX);
+					bool bAnyProjected = false;
+					for (int32 i = 0; i < 8; ++i)
+					{
+						FVector2D ScreenPt;
+						// Use UWidgetLayoutLibrary to get DPI-aware, viewport-relative widget coordinates
+						if (UWidgetLayoutLibrary::ProjectWorldLocationToWidgetPosition(this, Corners[i], ScreenPt, /*bPlayerViewportRelative*/ true))
+						{
+							bAnyProjected = true;
+							MinPt.X = FMath::Min(MinPt.X, ScreenPt.X);
+							MinPt.Y = FMath::Min(MinPt.Y, ScreenPt.Y);
+							MaxPt.X = FMath::Max(MaxPt.X, ScreenPt.X);
+							MaxPt.Y = FMath::Max(MaxPt.Y, ScreenPt.Y);
+						}
+					}
+
+					if (bAnyProjected)
+					{
+						// Small padding
+						const float Pad = 6.f;
+						TL = MinPt - FVector2D(Pad, Pad);
+						BR = MaxPt + FVector2D(Pad, Pad);
+						bHasTarget = true;
+					}
+				}
+			}
+
+			if (bHasTarget)
+			{
+				InteractHighlightWidget->SetHighlightRect(TL, BR);
+				InteractHighlightWidget->SetVisible(true);
+			}
+			else
+			{
+				InteractHighlightWidget->SetVisible(false);
 			}
 		}
 	}

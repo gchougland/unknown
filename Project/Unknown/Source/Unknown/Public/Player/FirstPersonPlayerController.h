@@ -82,6 +82,10 @@ protected:
  UPROPERTY()
  TObjectPtr<class UInputAction> FlashlightAction;
 
- // Internal state: whether RMB is currently held for rotating a held object
- bool bRotateHeld = false;
- };
+	// Internal state: whether RMB is currently held for rotating a held object
+	bool bRotateHeld = false;
+
+	// UI: highlight widget that draws a 2D border around current interactable
+	UPROPERTY()
+	TObjectPtr<class UInteractHighlightWidget> InteractHighlightWidget;
+};
