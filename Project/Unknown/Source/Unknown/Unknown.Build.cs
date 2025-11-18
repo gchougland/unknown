@@ -8,12 +8,12 @@ public class Unknown : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput" });
+  PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "GameplayTags", "DeveloperSettings", "UMG", "Slate", "SlateCore" });
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "PhysicsCore" });
+  PrivateDependencyModuleNames.AddRange(new string[] { "PhysicsCore", "ImageWrapper", "ImageCore", "RenderCore" });
 
-		// UI dependencies for runtime drawing of selection box via UMG/Slate
-		PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore", "UMG" });
+  // UI dependencies for runtime drawing of selection box via UMG/Slate
+  PrivateDependencyModuleNames.AddRange(new string[] { });
 		
 		// Uncomment if you are using online features
 		// PrivateDependencyModuleNames.Add("OnlineSubsystem");

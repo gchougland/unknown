@@ -6,6 +6,9 @@
 
 // Forward decl to avoid heavy includes in header
 struct FInputActionValue;
+class UHotbarWidget;
+class UInventoryScreenWidget;
+class UItemDefinition;
 
 #include "FirstPersonPlayerController.generated.h"
 
@@ -44,6 +47,7 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
 	virtual void PlayerTick(float DeltaTime) override;
+	virtual void OnPossess(APawn* InPawn) override;
 
 	// Handlers
 	void OnMove(const struct FInputActionValue& Value);
@@ -58,6 +62,19 @@ protected:
 	void OnRotateHeldReleased(const struct FInputActionValue& Value);
 	void OnThrow(const struct FInputActionValue& Value);
 	void OnFlashlightToggle(const struct FInputActionValue& Value);
+	void OnPickup(const struct FInputActionValue& Value);
+	void OnSpawnItem(const struct FInputActionValue& Value);
+
+	// Ensure mapping context and actions exist and have keys mapped
+	void InitializeInputAssetsIfNeeded();
+
+ // UI toggles
+	UFUNCTION()
+	void ToggleInventory();
+
+	// Blueprint-configurable debug spawn item (for P key)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Debug|Spawn")
+	TSoftObjectPtr<class UItemDefinition> DebugSpawnItem;
 
 	// Code-defined Enhanced Input assets
 	UPROPERTY()
@@ -81,11 +98,26 @@ protected:
  TObjectPtr<class UInputAction> ThrowAction;
  UPROPERTY()
  TObjectPtr<class UInputAction> FlashlightAction;
+ UPROPERTY()
+ TObjectPtr<class UInputAction> PickupAction;
+ UPROPERTY()
+ TObjectPtr<class UInputAction> SpawnCrowbarAction;
 
 	// Internal state: whether RMB is currently held for rotating a held object
 	bool bRotateHeld = false;
 
-	// UI: highlight widget that draws a 2D border around current interactable
-	UPROPERTY()
-	TObjectPtr<class UInteractHighlightWidget> InteractHighlightWidget;
+    // UI: highlight widget that draws a 2D border around current interactable
+    UPROPERTY()
+    TObjectPtr<class UInteractHighlightWidget> InteractHighlightWidget;
+
+    // UI: always-on hotbar widget (left side)
+    UPROPERTY()
+    TObjectPtr<UHotbarWidget> HotbarWidget;
+
+    // UI: modal inventory screen
+    UPROPERTY()
+    TObjectPtr<class UInventoryScreenWidget> InventoryScreen;
+
+    // Cached UI-open state used to quickly gate inputs without dereferencing widgets
+    bool bInventoryUIOpen = false;
 };

@@ -3,10 +3,15 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
+#include "Inventory/ItemTypes.h"
 
 class UCameraComponent;
 class UPhysicsInteractionComponent;
 class USpotLightComponent;
+class UInventoryComponent;
+class UHotbarComponent;
+class USceneComponent;
+class AItemPickup;
 
 #include "FirstPersonCharacter.generated.h"
 
@@ -39,6 +44,10 @@ public:
 protected:
 	virtual void BeginPlay() override;
 
+	// Scene component used as a programmable hold point when no mesh/socket is available
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Inventory", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<USceneComponent> HoldPoint;
+
 	// Desired configured speeds
 	UPROPERTY(EditDefaultsOnly, Category="Movement")
 	float WalkSpeed = 600.f;
@@ -61,6 +70,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Interaction", meta=(AllowPrivateAccess="true"))
 	TObjectPtr<UPhysicsInteractionComponent> PhysicsInteraction;
 
+ // Inventory component (to be used by gameplay & UI)
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Inventory", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UInventoryComponent> Inventory;
+
+	// Hotbar component (1-9 selection and assignment)
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Inventory", meta=(AllowPrivateAccess="true"))
+	TObjectPtr<UHotbarComponent> Hotbar;
+
 	// Remember standing camera Z captured at runtime so uncrouch returns exactly
 	UPROPERTY(Transient)
 	float StandingCameraZ = 0.f;
@@ -72,4 +89,52 @@ protected:
 	// ACharacter hooks to keep camera height consistent with crouch state
 	virtual void OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust) override;
 	virtual void OnEndCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust) override;
+
+public:
+	UFUNCTION(BlueprintPure, Category="Inventory")
+	UInventoryComponent* GetInventory() const { return Inventory; }
+
+	UFUNCTION(BlueprintPure, Category="Inventory")
+	UHotbarComponent* GetHotbar() const { return Hotbar; }
+
+	// Selects a hotbar slot [0..8] and updates held item from inventory
+	UFUNCTION(BlueprintCallable, Category="Inventory")
+	bool SelectHotbarSlot(int32 Index);
+
+	// Hold an item from inventory (spawns actor and attaches to hand socket)
+	UFUNCTION(BlueprintCallable, Category="Inventory")
+	bool HoldItem(const FItemEntry& ItemEntry);
+
+	// Release the currently held item (removes from world)
+	UFUNCTION(BlueprintCallable, Category="Inventory")
+	void ReleaseHeldItem();
+
+	// Check if an item is currently being held
+	UFUNCTION(BlueprintPure, Category="Inventory")
+	bool IsHoldingItem() const { return HeldItemActor != nullptr; }
+
+	// Get the currently held item entry (if any)
+	UFUNCTION(BlueprintPure, Category="Inventory")
+	FItemEntry GetHeldItemEntry() const;
+
+protected:
+	// Currently held item actor (spawned and attached to socket)
+	UPROPERTY(Transient)
+	TObjectPtr<AItemPickup> HeldItemActor;
+
+	// Currently held item entry data
+	UPROPERTY(Transient)
+	FItemEntry HeldItemEntry;
+
+	// Socket name for attaching held items (default: Hand_R_Socket)
+	UPROPERTY(EditDefaultsOnly, Category="Inventory")
+	FName HandSocketName = TEXT("Hand_R_Socket");
+
+	// Inventory removal handler to auto-release held item if its entry is removed
+	UFUNCTION()
+	void OnInventoryItemRemoved(const FGuid& RemovedItemId);
+
+	// Inventory added handler to potentially populate active hotbar slot and hold the item
+	UFUNCTION()
+	void OnInventoryItemAdded(const FItemEntry& AddedItem);
 };

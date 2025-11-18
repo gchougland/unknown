@@ -2,6 +2,15 @@
 #include "Rendering/DrawElements.h"
 #include "Brushes/SlateColorBrush.h"
 
+void UInteractHighlightWidget::SetCrosshairEnabled(bool bEnabled)
+{
+    if (bShowCrosshair != bEnabled)
+    {
+        bShowCrosshair = bEnabled;
+        Invalidate(EInvalidateWidget::Paint);
+    }
+}
+
 void UInteractHighlightWidget::SetHighlightRect(const FVector2D& InTopLeft, const FVector2D& InBottomRight)
 {
     TopLeft = InTopLeft;

@@ -10,12 +10,16 @@ class UNKNOWN_API UInteractHighlightWidget : public UUserWidget
 {
 	GENERATED_BODY()
 public:
-	UFUNCTION(BlueprintCallable, Category="InteractHighlight")
-	void SetHighlightRect(const FVector2D& InTopLeft, const FVector2D& InBottomRight);
+    UFUNCTION(BlueprintCallable, Category="InteractHighlight")
+    void SetHighlightRect(const FVector2D& InTopLeft, const FVector2D& InBottomRight);
 
-	// Toggle only the highlight rectangle visibility; the widget itself stays visible so the crosshair can always render
-	UFUNCTION(BlueprintCallable, Category="InteractHighlight")
-	void SetVisible(bool bInVisible);
+    // Toggle only the highlight rectangle visibility; the widget itself stays visible so the crosshair can always render
+    UFUNCTION(BlueprintCallable, Category="InteractHighlight")
+    void SetVisible(bool bInVisible);
+
+    // Toggle crosshair visibility independently of the highlight rectangle
+    UFUNCTION(BlueprintCallable, Category="InteractHighlight")
+    void SetCrosshairEnabled(bool bEnabled);
 
 protected:
 	virtual int32 NativePaint(const FPaintArgs& Args,

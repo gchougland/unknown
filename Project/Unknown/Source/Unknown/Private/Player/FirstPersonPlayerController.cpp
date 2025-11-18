@@ -11,7 +11,12 @@
 #include "Engine/World.h"
 #include "Engine/EngineTypes.h"
 #include "UI/InteractHighlightWidget.h"
+#include "UI/HotbarWidget.h"
+#include "UI/InventoryScreenWidget.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
+#include "Inventory/InventoryComponent.h"
+#include "Inventory/ItemDefinition.h"
+#include "Inventory/ItemPickup.h"
 
 AFirstPersonPlayerController::AFirstPersonPlayerController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -31,7 +36,9 @@ AFirstPersonPlayerController::AFirstPersonPlayerController(const FObjectInitiali
 	RotateHeldAction = CreateDefaultSubobject<UInputAction>(TEXT("FP_RotateHeldAction"));
 	ThrowAction = CreateDefaultSubobject<UInputAction>(TEXT("FP_ThrowAction"));
 	FlashlightAction = CreateDefaultSubobject<UInputAction>(TEXT("FP_FlashlightAction"));
-	
+	PickupAction = CreateDefaultSubobject<UInputAction>(TEXT("FP_PickupAction"));
+	SpawnCrowbarAction = CreateDefaultSubobject<UInputAction>(TEXT("FP_SpawnCrowbarAction"));
+ 	
 	// Value types
 	if (MoveAction) MoveAction->ValueType = EInputActionValueType::Axis2D;
 	if (LookAction) LookAction->ValueType = EInputActionValueType::Axis2D;
@@ -76,18 +83,81 @@ AFirstPersonPlayerController::AFirstPersonPlayerController(const FObjectInitiali
 	{
 		DefaultMappingContext->MapKey(FlashlightAction, EKeys::F);
 	}
+	// Pickup (R) and debug spawn (P)
+	if (DefaultMappingContext && PickupAction)
+	{
+		DefaultMappingContext->MapKey(PickupAction, EKeys::R);
+	}
+	if (DefaultMappingContext && SpawnCrowbarAction)
+	{
+		DefaultMappingContext->MapKey(SpawnCrowbarAction, EKeys::P);
+	}
 }
 
 void AFirstPersonPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+	UE_LOG(LogTemp, Display, TEXT("[PC] BeginPlay on %s"), *GetName());
+
+	// Ensure our input assets exist even if a Blueprint default wiped C++ subobjects
+	{
+		auto EnsureAction = [this](TObjectPtr<UInputAction>& Field, const TCHAR* Name, EInputActionValueType Type)
+		{
+			if (!Field)
+			{
+				Field = NewObject<UInputAction>(this, Name);
+			}
+			if (Field)
+			{
+				Field->ValueType = Type;
+			}
+		};
+
+		if (!DefaultMappingContext)
+		{
+			DefaultMappingContext = NewObject<UInputMappingContext>(this, TEXT("FP_DefaultMappingContext_RT"));
+		}
+
+		// Ensure actions exist with correct value types
+		EnsureAction(MoveAction, TEXT("FP_MoveAction"), EInputActionValueType::Axis2D);
+		EnsureAction(LookAction, TEXT("FP_LookAction"), EInputActionValueType::Axis2D);
+		EnsureAction(JumpAction, TEXT("FP_JumpAction"), EInputActionValueType::Boolean);
+		EnsureAction(CrouchAction, TEXT("FP_CrouchAction"), EInputActionValueType::Boolean);
+		EnsureAction(SprintAction, TEXT("FP_SprintAction"), EInputActionValueType::Boolean);
+		EnsureAction(InteractAction, TEXT("FP_InteractAction"), EInputActionValueType::Boolean);
+		EnsureAction(RotateHeldAction, TEXT("FP_RotateHeldAction"), EInputActionValueType::Boolean);
+		EnsureAction(ThrowAction, TEXT("FP_ThrowAction"), EInputActionValueType::Boolean);
+		EnsureAction(FlashlightAction, TEXT("FP_FlashlightAction"), EInputActionValueType::Boolean);
+		EnsureAction(PickupAction, TEXT("FP_PickupAction"), EInputActionValueType::Boolean);
+		EnsureAction(SpawnCrowbarAction, TEXT("FP_SpawnCrowbarAction"), EInputActionValueType::Boolean);
+
+		// Reapply minimal key mappings if the context exists (safe to call repeatedly)
+		if (DefaultMappingContext)
+		{
+			// Axes
+			if (LookAction) { DefaultMappingContext->MapKey(LookAction, EKeys::Mouse2D); }
+			// Buttons
+			if (JumpAction) { DefaultMappingContext->MapKey(JumpAction, EKeys::SpaceBar); }
+			if (CrouchAction) { DefaultMappingContext->MapKey(CrouchAction, EKeys::LeftControl); }
+			if (SprintAction) { DefaultMappingContext->MapKey(SprintAction, EKeys::LeftShift); }
+			if (InteractAction) { DefaultMappingContext->MapKey(InteractAction, EKeys::E); }
+			if (RotateHeldAction) { DefaultMappingContext->MapKey(RotateHeldAction, EKeys::RightMouseButton); }
+			if (ThrowAction) { DefaultMappingContext->MapKey(ThrowAction, EKeys::LeftMouseButton); }
+			if (FlashlightAction) { DefaultMappingContext->MapKey(FlashlightAction, EKeys::F); }
+			if (PickupAction) { DefaultMappingContext->MapKey(PickupAction, EKeys::R); }
+			if (SpawnCrowbarAction) { DefaultMappingContext->MapKey(SpawnCrowbarAction, EKeys::P); }
+		}
+	}
 
 	// Apply our mapping context to the local player enhanced input subsystem
 	if (ULocalPlayer* LP = GetLocalPlayer())
 	{
 		if (UEnhancedInputLocalPlayerSubsystem* Subsys = LP->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>())
 		{
-			Subsys->AddMappingContext(DefaultMappingContext, /*Priority*/0);
+			if (DefaultMappingContext)
+			{
+				Subsys->AddMappingContext(DefaultMappingContext, /*Priority*/0);
+			}
 		}
 	}
 
@@ -139,6 +209,32 @@ void AFirstPersonPlayerController::BeginPlay()
 		}
 	}
 
+	// Create and add the hotbar widget (always visible, left side)
+	if (!HotbarWidget)
+	{
+		HotbarWidget = CreateWidget<UHotbarWidget>(this, UHotbarWidget::StaticClass());
+		if (HotbarWidget)
+		{
+   HotbarWidget->SetOwningPlayer(this);
+			HotbarWidget->AddToPlayerScreen(500);
+   HotbarWidget->SetVisibility(ESlateVisibility::Visible);
+   			HotbarWidget->SetRenderOpacity(1.f);
+   HotbarWidget->SetAnchorsInViewport(FAnchors(0.f, 0.1f, 0.f, 0.9f));
+   HotbarWidget->SetAlignmentInViewport(FVector2D(0.f, 0.f));
+   // No padding between the left edge of the screen and the slots
+   HotbarWidget->SetPositionInViewport(FVector2D(0.f, 50.f), false);
+			HotbarWidget->SetDesiredSizeInViewport(FVector2D(120.f, 9.f * 72.f));
+
+			if (AFirstPersonCharacter* C1 = Cast<AFirstPersonCharacter>(GetPawn()))
+			{
+				if (UHotbarComponent* HB = C1->GetHotbar())
+				{
+					HotbarWidget->SetHotbar(HB);
+				}
+			}
+		}
+	}
+
 	// Lock input to game only and hide cursor for FPS
 	FInputModeGameOnly Mode;
 	SetInputMode(Mode);
@@ -186,6 +282,14 @@ void AFirstPersonPlayerController::SetupInputComponent()
 		{
 			EIC->BindAction(FlashlightAction, ETriggerEvent::Started, this, &AFirstPersonPlayerController::OnFlashlightToggle);
 		}
+		if (PickupAction)
+		{
+			EIC->BindAction(PickupAction, ETriggerEvent::Started, this, &AFirstPersonPlayerController::OnPickup);
+		}
+		if (SpawnCrowbarAction)
+		{
+			EIC->BindAction(SpawnCrowbarAction, ETriggerEvent::Started, this, &AFirstPersonPlayerController::OnSpawnItem);
+		}
 	}
 }
 
@@ -205,39 +309,31 @@ void AFirstPersonPlayerController::OnMove(const FInputActionValue& Value)
 
 void AFirstPersonPlayerController::OnLook(const FInputActionValue& Value)
 {
+	if (bInventoryUIOpen)
+	{
+		return;
+	}
 	const FVector2D Axis = Value.Get<FVector2D>();
 
-	// If we're holding an object and RMB rotate is active, suppress camera look and only rotate the held object
-	bool bDidRotateHeld = false;
-	if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
+	// When right mouse is held and we are holding a physics object, forward look deltas to rotate the held object
+	if (bRotateHeld)
 	{
-		if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
+		if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
 		{
-			if (bRotateHeld && PIC->IsHolding())
+			if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
 			{
-				const FVector2D Scaled = Axis * PIC->GetRotationSensitivity();
-				PIC->AddRotationInput(Scaled);
-				bDidRotateHeld = true;
+				if (PIC->IsHolding())
+				{
+					PIC->AddRotationInput(Axis);
+					return; // do not move camera while rotating the held object
+				}
 			}
 		}
 	}
 
-	if (!bDidRotateHeld)
-	{
-		// Normal camera look
-		AddYawInput(Axis.X);
-		AddPitchInput(-Axis.Y); // Invert Y so moving mouse up looks up (UE default is opposite)
-
-		// Forwarding look deltas when not rotating is harmless; component ignores unless rotate mode is active
-		if (AFirstPersonCharacter* C2 = Cast<AFirstPersonCharacter>(GetPawn()))
-		{
-			if (UPhysicsInteractionComponent* PIC2 = C2->FindComponentByClass<UPhysicsInteractionComponent>())
-			{
-				const FVector2D Scaled2 = Axis * PIC2->GetRotationSensitivity();
-				PIC2->AddRotationInput(Scaled2);
-			}
-		}
-	}
+	// Normal camera look
+	AddYawInput(Axis.X);
+	AddPitchInput(-Axis.Y);
 
 	// Pitch clamping is handled by PlayerCameraManager's ViewPitchMin/Max
 }
@@ -287,11 +383,16 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 	Super::PlayerTick(DeltaTime);
 
 	// WASD movement from raw keys (simple, avoids complex 2D mapping setup)
+	const bool bInventoryOpen = (InventoryScreen && InventoryScreen->IsOpen());
+	bInventoryUIOpen = bInventoryOpen;
 	FVector2D MoveAxis(0.f, 0.f);
-	if (IsInputKeyDown(EKeys::W)) MoveAxis.X += 1.f;
-	if (IsInputKeyDown(EKeys::S)) MoveAxis.X -= 1.f;
-	if (IsInputKeyDown(EKeys::D)) MoveAxis.Y += 1.f;
-	if (IsInputKeyDown(EKeys::A)) MoveAxis.Y -= 1.f;
+	if (!bInventoryOpen)
+	{
+		if (IsInputKeyDown(EKeys::W)) MoveAxis.X += 1.f;
+		if (IsInputKeyDown(EKeys::S)) MoveAxis.X -= 1.f;
+		if (IsInputKeyDown(EKeys::D)) MoveAxis.Y += 1.f;
+		if (IsInputKeyDown(EKeys::A)) MoveAxis.Y -= 1.f;
+	}
 
 	if (!MoveAxis.IsNearlyZero())
 	{
@@ -303,6 +404,29 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 			P->AddMovementInput(Fwd, MoveAxis.X);
 			P->AddMovementInput(Rt, MoveAxis.Y);
 		}
+	}
+
+	// Number keys 1-9 select hotbar slots on just-press
+	if (!bInventoryOpen)
+	{
+		if (AFirstPersonCharacter* CharForHotbar = Cast<AFirstPersonCharacter>(GetPawn()))
+		{
+			if (WasInputKeyJustPressed(EKeys::One)) { UE_LOG(LogTemp, Display, TEXT("[PC] SelectHotbarSlot 0")); CharForHotbar->SelectHotbarSlot(0); }
+			if (WasInputKeyJustPressed(EKeys::Two)) { UE_LOG(LogTemp, Display, TEXT("[PC] SelectHotbarSlot 1")); CharForHotbar->SelectHotbarSlot(1); }
+			if (WasInputKeyJustPressed(EKeys::Three)) { UE_LOG(LogTemp, Display, TEXT("[PC] SelectHotbarSlot 2")); CharForHotbar->SelectHotbarSlot(2); }
+			if (WasInputKeyJustPressed(EKeys::Four)) { UE_LOG(LogTemp, Display, TEXT("[PC] SelectHotbarSlot 3")); CharForHotbar->SelectHotbarSlot(3); }
+			if (WasInputKeyJustPressed(EKeys::Five)) { UE_LOG(LogTemp, Display, TEXT("[PC] SelectHotbarSlot 4")); CharForHotbar->SelectHotbarSlot(4); }
+			if (WasInputKeyJustPressed(EKeys::Six)) { UE_LOG(LogTemp, Display, TEXT("[PC] SelectHotbarSlot 5")); CharForHotbar->SelectHotbarSlot(5); }
+			if (WasInputKeyJustPressed(EKeys::Seven)) { UE_LOG(LogTemp, Display, TEXT("[PC] SelectHotbarSlot 6")); CharForHotbar->SelectHotbarSlot(6); }
+			if (WasInputKeyJustPressed(EKeys::Eight)) { UE_LOG(LogTemp, Display, TEXT("[PC] SelectHotbarSlot 7")); CharForHotbar->SelectHotbarSlot(7); }
+			if (WasInputKeyJustPressed(EKeys::Nine)) { UE_LOG(LogTemp, Display, TEXT("[PC] SelectHotbarSlot 8")); CharForHotbar->SelectHotbarSlot(8); }
+		}
+	}
+
+	// Toggle inventory screen with Tab (primary) or I (fallback)
+	if (WasInputKeyJustPressed(EKeys::Tab) || WasInputKeyJustPressed(EKeys::I))
+	{
+		ToggleInventory();
 	}
 
 	// Update hold target for physics interaction so held object follows view
@@ -321,8 +445,13 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 	// Compute screen-space selection rect for current interactable under crosshair
 	if (InteractHighlightWidget)
 	{
+		// Hide highlight entirely while inventory UI is open
+		if (bInventoryOpen)
+		{
+			InteractHighlightWidget->SetVisible(false);
+		}
 		// Suppress highlight while holding a physics object
-		if (PIC && PIC->IsHolding())
+		else if (PIC && PIC->IsHolding())
 		{
 			InteractHighlightWidget->SetVisible(false);
 		}
@@ -403,11 +532,16 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 
 void AFirstPersonPlayerController::OnInteract(const FInputActionValue& Value)
 {
+	// Block interaction while inventory UI is open
+	if (bInventoryUIOpen)
+	{
+		return;
+	}
 	if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
 	{
 		if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
 		{
-   if (PIC->IsHolding())
+	   if (PIC->IsHolding())
 			{
 				UE_LOG(LogTemp, Display, TEXT("[Interact] Releasing currently held object."));
 				// Ensure rotate state is cleared when we release
@@ -475,6 +609,10 @@ void AFirstPersonPlayerController::OnInteract(const FInputActionValue& Value)
 
 void AFirstPersonPlayerController::OnRotateHeldPressed(const FInputActionValue& Value)
 {
+	if (bInventoryUIOpen)
+	{
+		return;
+	}
 	bRotateHeld = true;
 	if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
 	{
@@ -487,6 +625,10 @@ void AFirstPersonPlayerController::OnRotateHeldPressed(const FInputActionValue& 
 
 void AFirstPersonPlayerController::OnRotateHeldReleased(const FInputActionValue& Value)
 {
+	if (bInventoryUIOpen)
+	{
+		return;
+	}
 	bRotateHeld = false;
 	if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
 	{
@@ -499,6 +641,10 @@ void AFirstPersonPlayerController::OnRotateHeldReleased(const FInputActionValue&
 
 void AFirstPersonPlayerController::OnThrow(const FInputActionValue& Value)
 {
+	if (bInventoryUIOpen)
+	{
+		return;
+	}
 	if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
 	{
 		if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
@@ -518,6 +664,186 @@ void AFirstPersonPlayerController::OnFlashlightToggle(const FInputActionValue& V
 	{
 		C->ToggleFlashlight();
 	}
+}
+
+void AFirstPersonPlayerController::OnPossess(APawn* InPawn)
+{
+	Super::OnPossess(InPawn);
+	UE_LOG(LogTemp, Display, TEXT("[PC] OnPossess Pawn=%s"), InPawn ? *InPawn->GetName() : TEXT("<null>"));
+
+	// If we already created the hotbar widget, bind it now that we have a pawn
+	if (HotbarWidget)
+	{
+		if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(InPawn))
+		{
+			if (UHotbarComponent* HB = C->GetHotbar())
+			{
+				HotbarWidget->SetHotbar(HB);
+			}
+		}
+	}
+}
+
+void AFirstPersonPlayerController::ToggleInventory()
+{
+	// Lazy-create inventory widget
+	if (!InventoryScreen)
+	{
+		InventoryScreen = CreateWidget<UInventoryScreenWidget>(this, UInventoryScreenWidget::StaticClass());
+		if (InventoryScreen)
+		{
+			InventoryScreen->AddToViewport(900);
+			InventoryScreen->SetAnchorsInViewport(FAnchors(0.1f, 0.1f, 0.9f, 0.9f));
+			InventoryScreen->SetAlignmentInViewport(FVector2D(0.f, 0.f));
+			// Close the inventory when the widget requests it (Tab/I/Esc)
+			InventoryScreen->OnRequestClose.AddDynamic(this, &AFirstPersonPlayerController::ToggleInventory);
+			UE_LOG(LogTemp, Display, TEXT("[PC] Inventory widget created and added to viewport"));
+		}
+	}
+
+	if (!InventoryScreen)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PC] ToggleInventory: InventoryScreen is null (failed to create)"));
+		return;
+	}
+
+	const bool bCurrentlyOpen = InventoryScreen->IsOpen();
+	if (bCurrentlyOpen)
+	{
+		bInventoryUIOpen = false;
+		InventoryScreen->Close();
+  // Restore crosshair/highlight when closing inventory
+  if (InteractHighlightWidget)
+  {
+      InteractHighlightWidget->SetCrosshairEnabled(true);
+      InteractHighlightWidget->SetVisible(false); // will auto-show next tick if a target exists
+  }
+		FInputModeGameOnly GM;
+		SetInputMode(GM);
+		SetIgnoreLookInput(false);
+		SetIgnoreMoveInput(false);
+		bShowMouseCursor = false;
+		UE_LOG(LogTemp, Display, TEXT("[PC] Inventory closed; returning to GameOnly input"));
+	}
+	else
+	{
+		UInventoryComponent* Inv = nullptr;
+		if (AFirstPersonCharacter* Char = Cast<AFirstPersonCharacter>(GetPawn()))
+		{
+			Inv = Char->GetInventory();
+		}
+		InventoryScreen->Open(Inv, nullptr);
+		bInventoryUIOpen = true;
+  // Hide crosshair/highlight behind the inventory
+  if (InteractHighlightWidget)
+  {
+      InteractHighlightWidget->SetCrosshairEnabled(false);
+      InteractHighlightWidget->SetVisible(false);
+  }
+		// Switch to UI-only input and ignore game look/move
+		FInputModeUIOnly Mode;
+		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		SetInputMode(Mode);
+		SetIgnoreLookInput(true);
+		SetIgnoreMoveInput(true);
+		bShowMouseCursor = true;
+		UE_LOG(LogTemp, Display, TEXT("[PC] Inventory opened; using UIOnly input"));
+	}
+}
+
+void AFirstPersonPlayerController::OnPickup(const FInputActionValue& Value)
+{
+	if (bInventoryUIOpen)
+	{
+		return;
+	}
+	AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn());
+	if (!C)
+	{
+		return;
+	}
+	UInventoryComponent* Inv = C->GetInventory();
+	if (!Inv)
+	{
+		return;
+	}
+	// Trace for an item pickup in front of the camera
+	FVector CamLoc; FRotator CamRot;
+	GetPlayerViewPoint(CamLoc, CamRot);
+	const FVector Start = CamLoc;
+	const FVector End = Start + CamRot.Vector() * 300.f;
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ItemPickup), false);
+	Params.AddIgnoredActor(C);
+	bool bHitAnything = false;
+	if (GetWorld() && GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
+	{
+		bHitAnything = true;
+		if (AItemPickup* Pickup = Cast<AItemPickup>(Hit.GetActor()))
+		{
+			UItemDefinition* Def = Pickup->GetItemDef();
+			if (Def)
+			{
+				FItemEntry Entry; Entry.Def = Def; Entry.ItemId = FGuid::NewGuid();
+				if (Inv->TryAdd(Entry))
+				{
+					UE_LOG(LogTemp, Display, TEXT("[Pickup] Added %s to inventory"), *Def->GetName());
+					Pickup->Destroy();
+					// If inventory UI is open, refresh it so the new item appears immediately
+					if (bInventoryUIOpen && InventoryScreen)
+					{
+					  InventoryScreen->RefreshInventoryView();
+					}
+				}
+				else
+				{
+					UE_LOG(LogTemp, Display, TEXT("[Pickup] Inventory full or invalid item; could not add %s"), *Def->GetName());
+				}
+			}
+		}
+	}
+	// If we did not hit any interactable and the character is holding an item, release it
+	if (!bHitAnything)
+	{
+		if (C->IsHoldingItem())
+		{
+			UE_LOG(LogTemp, Display, TEXT("[Pickup] No interactable under crosshair; releasing held item on R"));
+			C->ReleaseHeldItem();
+		}
+	}
+}
+
+void AFirstPersonPlayerController::OnSpawnItem(const FInputActionValue& Value)
+{
+#if !UE_BUILD_SHIPPING
+	if (bInventoryUIOpen)
+	{
+		return;
+	}
+	// Resolve the item definition from the soft reference (Blueprint-configurable)
+	UItemDefinition* Def = DebugSpawnItem.LoadSynchronous();
+	if (!Def)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SpawnItem] DebugSpawnItem is not set or failed to load"));
+		return;
+	}
+	FVector CamLoc; FRotator CamRot;
+	GetPlayerViewPoint(CamLoc, CamRot);
+	FActorSpawnParameters Params; Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+	const FVector BaseLoc = CamLoc + CamRot.Vector() * 200.f;
+	const FRotator BaseRot = FRotator(0.f, CamRot.Yaw, 0.f);
+	FTransform BaseTransform(BaseRot, BaseLoc, FVector(1.f));
+	FTransform FinalTransform = Def ? Def->DefaultDropTransform * BaseTransform : BaseTransform;
+	if (UWorld* World = GetWorld())
+	{
+		AItemPickup* Pickup = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), FinalTransform, Params);
+		if (Pickup)
+		{
+			Pickup->SetItemDef(Def);
+			UE_LOG(LogTemp, Display, TEXT("[SpawnItem] Spawned pickup %s at %s"), *GetNameSafe(Def), *FinalTransform.GetLocation().ToString());
+		}
+	}
+#endif
 }
 
 float AFirstPersonPlayerController::ClampPitchDegrees(float Degrees)
