@@ -12,6 +12,7 @@ class UInventoryComponent;
 class UHotbarComponent;
 class USceneComponent;
 class AItemPickup;
+class UEquipmentComponent;
 
 #include "FirstPersonCharacter.generated.h"
 
@@ -94,8 +95,11 @@ public:
 	UFUNCTION(BlueprintPure, Category="Inventory")
 	UInventoryComponent* GetInventory() const { return Inventory; }
 
-	UFUNCTION(BlueprintPure, Category="Inventory")
-	UHotbarComponent* GetHotbar() const { return Hotbar; }
+ UFUNCTION(BlueprintPure, Category="Inventory")
+ UHotbarComponent* GetHotbar() const { return Hotbar; }
+
+ UFUNCTION(BlueprintPure, Category="Inventory")
+ UEquipmentComponent* GetEquipment() const { return Equipment; }
 
 	// Selects a hotbar slot [0..8] and updates held item from inventory
 	UFUNCTION(BlueprintCallable, Category="Inventory")
@@ -118,9 +122,9 @@ public:
 	FItemEntry GetHeldItemEntry() const;
 
 protected:
-	// Currently held item actor (spawned and attached to socket)
-	UPROPERTY(Transient)
-	TObjectPtr<AItemPickup> HeldItemActor;
+ // Currently held item actor (spawned and attached to socket)
+ UPROPERTY(Transient)
+ TObjectPtr<AItemPickup> HeldItemActor;
 
 	// Currently held item entry data
 	UPROPERTY(Transient)
@@ -135,6 +139,10 @@ protected:
 	void OnInventoryItemRemoved(const FGuid& RemovedItemId);
 
 	// Inventory added handler to potentially populate active hotbar slot and hold the item
-	UFUNCTION()
-	void OnInventoryItemAdded(const FItemEntry& AddedItem);
+    UFUNCTION()
+    void OnInventoryItemAdded(const FItemEntry& AddedItem);
+
+    // Equipment component (manages equipping and effects)
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Inventory", meta=(AllowPrivateAccess="true"))
+    TObjectPtr<UEquipmentComponent> Equipment;
 };

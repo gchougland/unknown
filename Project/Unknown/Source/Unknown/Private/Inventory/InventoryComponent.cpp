@@ -1,5 +1,7 @@
 ﻿#include "Inventory/InventoryComponent.h"
 #include "Inventory/ItemDefinition.h"
+#include "Engine/Engine.h"
+#include "UI/MessageLogSubsystem.h"
 
 UInventoryComponent::UInventoryComponent()
 {
@@ -31,10 +33,23 @@ bool UInventoryComponent::CanAdd(const FItemEntry& Entry) const
 
 bool UInventoryComponent::TryAdd(const FItemEntry& Entry)
 {
-	if (!CanAdd(Entry))
-	{
-		return false;
-	}
+    if (!CanAdd(Entry))
+    {
+        // Notify the player via HUD/log that the item doesn't fit
+        if (GEngine)
+        {
+            if (UMessageLogSubsystem* Msg = GEngine->GetEngineSubsystem<UMessageLogSubsystem>())
+            {
+                const FString ItemName = Entry.Def ? Entry.Def->DisplayName.ToString() : TEXT("Item");
+                const float Used = GetUsedVolume();
+                const float Need = Entry.Def ? FMath::Max(0.f, Entry.Def->VolumePerUnit) : 0.f;
+                const float Max = MaxVolume;
+                const FString Text = FString::Printf(TEXT("Not enough space for %s (used %.1f / %.1f, needs %.1f)"), *ItemName, Used, Max, Need);
+                Msg->PushMessage(FText::FromString(Text), 3.5f);
+            }
+        }
+        return false;
+    }
 	FItemEntry Copy = Entry;
 	if (!Copy.ItemId.IsValid())
 	{

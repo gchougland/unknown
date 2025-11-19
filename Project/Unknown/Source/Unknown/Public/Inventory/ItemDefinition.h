@@ -3,11 +3,13 @@
 #include "CoreMinimal.h"
 #include "GameplayTagContainer.h"
 #include "Engine/DataAsset.h"
+#include "Inventory/EquipmentTypes.h"
 
 class UTexture2D;
 class UItemUseAction;
 class UStaticMesh;
 class UBlueprint;
+class UItemEquipEffect;
 
 #include "ItemDefinition.generated.h"
 
@@ -17,7 +19,7 @@ class UNKNOWN_API UItemDefinition : public UDataAsset
 {
 	GENERATED_BODY()
 public:
-	UItemDefinition();
+    UItemDefinition();
 
 	// Stable Guid for this definition (optional if using PrimaryAssetId)
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item")
@@ -43,8 +45,8 @@ public:
   FTransform IconCaptureTransform;
 
 	// Volume per unit (liters or project units)
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
-	float VolumePerUnit = 1.0f;
+ UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
+ float VolumePerUnit = 1.0f;
 
  // Physical mass in kilograms used to override the pickup's simulated body mass.
  // Set to <= 0 to use the mesh's default mass from its BodySetup.
@@ -58,18 +60,26 @@ public:
  bool bCollideWithPawns = true;
 
 	// Tags/capabilities
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
-	FGameplayTagContainer Tags;
+ UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
+ FGameplayTagContainer Tags;
 
 	// Optional default use action class
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
-	TSubclassOf<UItemUseAction> DefaultUseAction;
+ UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
+ TSubclassOf<UItemUseAction> DefaultUseAction;
 
 	// Default relative transform for how the item should appear when held in-hand (applied relative to HoldPoint or socket)
  UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Transforms")
  FTransform DefaultHoldTransform;
 
 	// Default relative transform used when dropping/spawning the item in front of the player (applied relative to the computed base drop transform)
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Transforms")
-	FTransform DefaultDropTransform;
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Transforms")
+    FTransform DefaultDropTransform;
+
+    // Equipment metadata
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Equipment")
+    bool bEquippable = false;
+
+    // Pluggable equip effects to apply/remove on equip/unequip. Instanced so per-item assets can tune effect properties.
+    UPROPERTY(EditDefaultsOnly, Instanced, BlueprintReadOnly, Category="Item|Equipment", meta=(EditCondition="bEquippable"))
+    TArray<TObjectPtr<UItemEquipEffect>> EquipEffects;
 };

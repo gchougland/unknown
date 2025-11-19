@@ -6,15 +6,18 @@
 #include "Widgets/SWidget.h"
 #include "Input/Reply.h"
 #include "Inventory/ItemTypes.h" // FItemEntry for delegate handler params
+#include "Inventory/EquipmentTypes.h" // EEquipmentSlot for equipment events
 #include "InventoryScreenWidget.generated.h"
 
 class UInventoryComponent;
 class UStorageComponent;
+class UEquipmentComponent;
 class UBorder;
 class UVerticalBox;
 class UTextBlock;
 class UImage;
 class UInventoryListWidget;
+class UEquipmentPanelWidget;
 class UItemDefinition;
 struct FGeometry;
 struct FKeyEvent;
@@ -53,15 +56,15 @@ public:
     FOnInventoryRequestClose OnRequestClose;
 
 protected:
-	virtual TSharedRef<SWidget> RebuildWidget() override;
-	virtual void NativeConstruct() override;
-	virtual void NativeDestruct() override;
-	virtual FReply NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
-	virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
+    virtual TSharedRef<SWidget> RebuildWidget() override;
+    virtual void NativeConstruct() override;
+    virtual void NativeDestruct() override;
+    virtual FReply NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
+    virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
 
 	void RebuildUI();
-	void Refresh();
-	bool HandleCloseKey(const FKey& Key);
+ void Refresh();
+ bool HandleCloseKey(const FKey& Key);
 
  UFUNCTION()
  void HandleRowContextRequested(UItemDefinition* ItemType, FVector2D ScreenPosition);
@@ -72,7 +75,14 @@ protected:
  UFUNCTION()
  void HandleListRowUnhovered();
 
-	void OpenContextMenu(UItemDefinition* ItemType, const FVector2D& ScreenPosition);
+ void OpenContextMenu(UItemDefinition* ItemType, const FVector2D& ScreenPosition);
+
+ // React to equipment changes so we can refresh the UI immediately after equip/unequip
+ UFUNCTION()
+ void HandleEquipmentEquipped(EEquipmentSlot InEquipSlot, const FItemEntry& Item);
+
+ UFUNCTION()
+ void HandleEquipmentUnequipped(EEquipmentSlot InEquipSlot, const FItemEntry& Item);
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInventoryComponent> Inventory;
@@ -125,4 +135,15 @@ private:
     void UpdateVolumeReadout();
     void UpdateInfoPanelForDef(UItemDefinition* Def);
     void ClearInfoPanel();
+
+    // Equipment access for RMB EQUIP and equipment panel (set during Open)
+    UPROPERTY(Transient)
+    TObjectPtr<UEquipmentComponent> Equipment;
+
+    // Body layout containers
+    UPROPERTY(Transient)
+    TObjectPtr<UVerticalBox> InventoryColumnVBox;
+
+    UPROPERTY(Transient)
+    TObjectPtr<UEquipmentPanelWidget> EquipmentPanel;
 };

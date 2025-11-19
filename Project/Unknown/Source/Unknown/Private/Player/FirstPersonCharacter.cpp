@@ -5,6 +5,7 @@
 #include "Components/SpotLightComponent.h"
 #include "Inventory/InventoryComponent.h"
 #include "Inventory/HotbarComponent.h"
+#include "Inventory/EquipmentComponent.h"
 #include "Inventory/ItemPickup.h"
 #include "Inventory/ItemTypes.h"
 #include "Inventory/ItemDefinition.h"
@@ -63,8 +64,11 @@ AFirstPersonCharacter::AFirstPersonCharacter(const FObjectInitializer& ObjectIni
 	// Create inventory component
 	Inventory = CreateDefaultSubobject<UInventoryComponent>(TEXT("Inventory"));
 
-	// Create hotbar component
-	Hotbar = CreateDefaultSubobject<UHotbarComponent>(TEXT("Hotbar"));
+ // Create hotbar component
+ Hotbar = CreateDefaultSubobject<UHotbarComponent>(TEXT("Hotbar"));
+
+ // Create equipment component and link to inventory in BeginPlay
+ Equipment = CreateDefaultSubobject<UEquipmentComponent>(TEXT("Equipment"));
 
  bUseControllerRotationYaw = true; // typical for FPS
 }
@@ -103,17 +107,22 @@ bool AFirstPersonCharacter::SelectHotbarSlot(int32 Index)
 
 void AFirstPersonCharacter::BeginPlay()
 {
-	Super::BeginPlay();
+    Super::BeginPlay();
 	if (FirstPersonCamera)
 	{
 		StandingCameraZ = FirstPersonCamera->GetRelativeLocation().Z;
 	}
-	// Bind to inventory events so we can keep held/active state in sync
+ // Bind to inventory events so we can keep held/active state in sync
 	if (Inventory)
 	{
 		Inventory->OnItemRemoved.AddDynamic(this, &AFirstPersonCharacter::OnInventoryItemRemoved);
 		Inventory->OnItemAdded.AddDynamic(this, &AFirstPersonCharacter::OnInventoryItemAdded);
 	}
+    // Link equipment to the inventory for capacity/effects handling
+    if (Equipment && Inventory)
+    {
+        Equipment->Inventory = Inventory;
+    }
 }
 
 void AFirstPersonCharacter::StartSprint()

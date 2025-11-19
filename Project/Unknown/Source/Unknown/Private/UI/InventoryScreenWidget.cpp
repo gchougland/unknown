@@ -5,6 +5,7 @@
 #include "Inventory/ItemPickup.h"
 #include "Inventory/HotbarComponent.h"
 #include "Inventory/ItemTypes.h"
+#include "Inventory/EquipmentComponent.h"
 #include "Components/Border.h"
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
@@ -15,10 +16,12 @@
 #include "Components/Image.h"
 #include "Blueprint/WidgetTree.h"
 #include "UI/InventoryListWidget.h"
+#include "UI/EquipmentPanelWidget.h"
 #include "Blueprint/WidgetBlueprintLibrary.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "UI/ProjectStyle.h"
+#include "UI/MessageLogSubsystem.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
@@ -162,14 +165,63 @@ void UInventoryScreenWidget::RebuildUI()
     // Ensure the freshly constructed readout shows current values
     UpdateVolumeReadout();
 
-    // Header row with column titles
+    // After the top bar, create a body HBox: Left = Inventory column (header+list+info), Right = Equipment panel
+    UHorizontalBox* BodyHBox = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("BodyHBox"));
+    if (UVerticalBoxSlot* BodySlot = RootVBox->AddChildToVerticalBox(BodyHBox))
+    {
+        BodySlot->SetPadding(FMargin(0.f));
+        BodySlot->SetHorizontalAlignment(HAlign_Fill);
+        BodySlot->SetVerticalAlignment(VAlign_Fill);
+        FSlateChildSize FillSize; FillSize.SizeRule = ESlateSizeRule::Fill; BodySlot->SetSize(FillSize);
+    }
+
+    // Left inventory column
+    UVerticalBox* LeftColumnVBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("InventoryColumnVBox"));
+    if (UHorizontalBoxSlot* LeftSlot = BodyHBox->AddChildToHorizontalBox(LeftColumnVBox))
+    {
+        LeftSlot->SetPadding(FMargin(0.f, 0.f, 8.f, 0.f));
+        LeftSlot->SetHorizontalAlignment(HAlign_Fill);
+        LeftSlot->SetVerticalAlignment(VAlign_Fill);
+        FSlateChildSize FillSize; FillSize.SizeRule = ESlateSizeRule::Fill; LeftSlot->SetSize(FillSize);
+    }
+
+    // Right equipment panel container
+    UBorder* EquipOuter = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("EquipOuter"));
+    {
+        FSlateBrush Brush; Brush.DrawAs = ESlateBrushDrawType::Box; Brush.TintColor = Border; Brush.Margin = FMargin(0.f);
+        EquipOuter->SetBrush(Brush);
+        EquipOuter->SetPadding(FMargin(1.f));
+    }
+    if (UHorizontalBoxSlot* RightSlot = BodyHBox->AddChildToHorizontalBox(EquipOuter))
+    {
+        RightSlot->SetPadding(FMargin(0.f));
+        RightSlot->SetHorizontalAlignment(HAlign_Fill);
+        RightSlot->SetVerticalAlignment(VAlign_Fill);
+        RightSlot->SetSize(ESlateSizeRule::Automatic);
+    }
+    UBorder* EquipInner = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("EquipInner"));
+    {
+        FSlateBrush Brush; Brush.DrawAs = ESlateBrushDrawType::Box; Brush.TintColor = Background; Brush.Margin = FMargin(0.f);
+        EquipInner->SetBrush(Brush);
+        EquipInner->SetPadding(FMargin(6.f));
+    }
+    EquipOuter->SetContent(EquipInner);
+    // Create the panel
+    EquipmentPanel = WidgetTree->ConstructWidget<UEquipmentPanelWidget>(UEquipmentPanelWidget::StaticClass(), TEXT("EquipmentPanel"));
+    EquipInner->SetContent(EquipmentPanel);
+    if (EquipmentPanel)
+    {
+        EquipmentPanel->SetEquipmentComponent(Equipment);
+    }
+
+    // Header row with column titles goes into left column
     UBorder* HeaderOuter = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("HeaderOuter"));
     {
         FSlateBrush Brush; Brush.DrawAs = ESlateBrushDrawType::Box; Brush.TintColor = Border; Brush.Margin = FMargin(0.f);
         HeaderOuter->SetBrush(Brush);
         HeaderOuter->SetPadding(FMargin(1.f));
     }
-    if (UVerticalBoxSlot* HeaderSlot = RootVBox->AddChildToVerticalBox(HeaderOuter))
+    if (UVerticalBoxSlot* HeaderSlot = LeftColumnVBox->AddChildToVerticalBox(HeaderOuter))
     {
         HeaderSlot->SetPadding(FMargin(0.f, 0.f, 0.f, 6.f));
     }
@@ -222,21 +274,21 @@ void UInventoryScreenWidget::RebuildUI()
     MakeHeaderCell(100.f, TEXT("Mass"));
     MakeHeaderCell(100.f, TEXT("Volume"));
 
-    // Aggregated inventory list below the header
+    // Aggregated inventory list below the header (in left column)
     if (!InventoryList)
     {
         InventoryList = WidgetTree->ConstructWidget<UInventoryListWidget>(UInventoryListWidget::StaticClass(), TEXT("InventoryList"));
     }
     if (InventoryList)
     {
-        RootVBox->AddChildToVerticalBox(InventoryList);
+        LeftColumnVBox->AddChildToVerticalBox(InventoryList);
         // Subscribe to row context requests (RMB) — ensure we don't double-bind across rebuilds
         InventoryList->OnRowContextRequested.AddUniqueDynamic(this, &UInventoryScreenWidget::HandleRowContextRequested);
         InventoryList->OnRowHovered.AddUniqueDynamic(this, &UInventoryScreenWidget::HandleListRowHovered);
         InventoryList->OnRowUnhovered.AddUniqueDynamic(this, &UInventoryScreenWidget::HandleListRowUnhovered);
     }
 
-    // Info section below the inventory list
+    // Info section below the inventory list (in left column)
     {
         // Outer white outline
         InfoOuterBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("InfoOuter"));
@@ -245,7 +297,7 @@ void UInventoryScreenWidget::RebuildUI()
             InfoOuterBorder->SetBrush(Brush);
             InfoOuterBorder->SetPadding(FMargin(1.f));
         }
-        if (UVerticalBoxSlot* InfoOuterSlot = RootVBox->AddChildToVerticalBox(InfoOuterBorder))
+        if (UVerticalBoxSlot* InfoOuterSlot = LeftColumnVBox->AddChildToVerticalBox(InfoOuterBorder))
         {
             InfoOuterSlot->SetPadding(FMargin(0.f, 8.f, 0.f, 0.f));
             InfoOuterSlot->SetHorizontalAlignment(HAlign_Fill);
@@ -487,6 +539,33 @@ void UInventoryScreenWidget::ClearInfoPanel()
     }
 }
 
+// React to equipment changes — keep inventory list, equipment panel, and volume label in sync
+void UInventoryScreenWidget::HandleEquipmentEquipped(EEquipmentSlot InEquipSlot, const FItemEntry& Item)
+{
+    // Refresh the inventory list and details
+    Refresh();
+    // Ensure the equipment panel shows the new state
+    if (EquipmentPanel)
+    {
+        EquipmentPanel->Refresh();
+    }
+    // Update the volume readout to reflect any capacity changes (e.g., backpack)
+    UpdateVolumeReadout();
+}
+
+void UInventoryScreenWidget::HandleEquipmentUnequipped(EEquipmentSlot InEquipSlot, const FItemEntry& Item)
+{
+    // Refresh the inventory list and details
+    Refresh();
+    // Ensure the equipment panel shows the new state
+    if (EquipmentPanel)
+    {
+        EquipmentPanel->Refresh();
+    }
+    // Update the volume readout to reflect any capacity changes
+    UpdateVolumeReadout();
+}
+
 void UInventoryScreenWidget::Open(UInventoryComponent* InInventory, UStorageComponent* InStorage)
 {
     // Prefer the explicitly provided inventory; otherwise, try to auto-resolve from the owning pawn
@@ -502,8 +581,35 @@ void UInventoryScreenWidget::Open(UInventoryComponent* InInventory, UStorageComp
         }
     }
     Storage = InStorage;
+
+    // Resolve Equipment component from the owning pawn (if available)
+    Equipment = nullptr;
+    if (APlayerController* PC = GetOwningPlayer())
+    {
+        if (APawn* Pawn = PC->GetPawn())
+        {
+            // Prefer direct find to avoid circular header coupling
+            Equipment = Pawn->FindComponentByClass<UEquipmentComponent>();
+        }
+    }
+    // Bind to equipment events so the screen updates immediately on equip/unequip
+    if (Equipment)
+    {
+        Equipment->OnItemEquipped.RemoveAll(this);
+        Equipment->OnItemUnequipped.RemoveAll(this);
+        Equipment->OnItemEquipped.AddDynamic(this, &UInventoryScreenWidget::HandleEquipmentEquipped);
+        Equipment->OnItemUnequipped.AddDynamic(this, &UInventoryScreenWidget::HandleEquipmentUnequipped);
+    }
     bOpen = true;
     SetVisibility(ESlateVisibility::Visible);
+
+    // Removed temporary HUD message on inventory open
+
+    // If an equipment panel already exists from a prior build, rebind it to the newly resolved Equipment now
+    if (EquipmentPanel)
+    {
+        EquipmentPanel->SetEquipmentComponent(Equipment);
+    }
 
     // Wire the list to the provided inventory and refresh the UI
     if (InventoryList)
@@ -513,38 +619,54 @@ void UInventoryScreenWidget::Open(UInventoryComponent* InInventory, UStorageComp
     }
 
     Refresh();
+    if (EquipmentPanel)
+    {
+        EquipmentPanel->Refresh();
+    }
     UpdateVolumeReadout();
 
     // Prewarm runtime item icons for visible/known items to minimize pop-in
-    if (Inventory)
+    if (UItemIconSubsystem* IconSys = UItemIconSubsystem::Get())
     {
-        if (UItemIconSubsystem* IconSys = UItemIconSubsystem::Get())
+        FItemIconStyle Style;
+        if (const UItemIconSettings* Settings = UItemIconSettings::Get())
         {
-            FItemIconStyle Style;
-            if (const UItemIconSettings* Settings = UItemIconSettings::Get())
+            Style.Resolution = Settings->DefaultResolution;
+            Style.Background = Settings->bTransparentBackground ? EItemIconBackground::Transparent : EItemIconBackground::SolidColor;
+            Style.SolidColor = Settings->SolidBackgroundColor;
+            Style.StyleVersion = Settings->StyleVersion;
+        }
+        // Collect unique item definitions from inventory and from currently equipped items
+        TArray<const UItemDefinition*> UniqueDefs;
+        TSet<const UItemDefinition*> Seen;
+        if (Inventory)
+        {
+            for (const FItemEntry& E : Inventory->GetEntries())
             {
-                Style.Resolution = Settings->DefaultResolution;
-                Style.Background = Settings->bTransparentBackground ? EItemIconBackground::Transparent : EItemIconBackground::SolidColor;
-                Style.SolidColor = Settings->SolidBackgroundColor;
-                Style.StyleVersion = Settings->StyleVersion;
-            }
-            // Collect unique item definitions from inventory
-            TArray<const UItemDefinition*> UniqueDefs;
-            {
-                TSet<const UItemDefinition*> Seen;
-                for (const FItemEntry& E : Inventory->GetEntries())
+                if (E.Def && !Seen.Contains(E.Def))
                 {
-                    if (E.Def && !Seen.Contains(E.Def))
-                    {
-                        Seen.Add(E.Def);
-                        UniqueDefs.Add(E.Def);
-                    }
+                    Seen.Add(E.Def);
+                    UniqueDefs.Add(E.Def);
                 }
             }
-            if (UniqueDefs.Num() > 0)
+        }
+        if (Equipment)
+        {
+            // Iterate all slots
+            const EEquipmentSlot Slots[] = { EEquipmentSlot::Head, EEquipmentSlot::Chest, EEquipmentSlot::Hands, EEquipmentSlot::Back, EEquipmentSlot::Primary, EEquipmentSlot::Secondary, EEquipmentSlot::Utility, EEquipmentSlot::Gadget };
+            for (EEquipmentSlot S : Slots)
             {
-                IconSys->Prewarm(UniqueDefs, Style);
+                FItemEntry EquippedEntry;
+                if (Equipment->GetEquipped(S, EquippedEntry) && EquippedEntry.Def && !Seen.Contains(EquippedEntry.Def))
+                {
+                    Seen.Add(EquippedEntry.Def);
+                    UniqueDefs.Add(EquippedEntry.Def);
+                }
             }
+        }
+        if (UniqueDefs.Num() > 0)
+        {
+            IconSys->Prewarm(UniqueDefs, Style);
         }
     }
 
@@ -1112,6 +1234,70 @@ void UInventoryScreenWidget::OpenContextMenu(UItemDefinition* ItemType, const FV
         }
     }) ];
 
+    // EQUIP (only for equippable items and only from the player's inventory panel)
+    if (ItemType && ItemType->bEquippable)
+    {
+        MenuVBox->AddSlot().AutoHeight().Padding(2.f)[ MakeStyledRow(TEXT("Equip"), [this, ItemType]()
+        {
+            UE_LOG(LogTemp, Display, TEXT("[InventoryScreen] Equip requested: %s"), *GetNameSafe(ItemType));
+            if (!ItemType || !Inventory)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("[InventoryScreen] Equip aborted: missing ItemType or Inventory"));
+                return;
+            }
+            // Resolve Equipment (prefer cached; else attempt to find on pawn)
+            UEquipmentComponent* EquipComp = Equipment;
+            if (!EquipComp)
+            {
+                if (APlayerController* PC = GetOwningPlayer())
+                {
+                    if (APawn* Pawn = PC->GetPawn())
+                    {
+                        EquipComp = Pawn->FindComponentByClass<UEquipmentComponent>();
+                    }
+                }
+            }
+            if (!EquipComp)
+            {
+                UE_LOG(LogTemp, Warning, TEXT("[InventoryScreen] Equip aborted: EquipmentComponent not found on pawn"));
+                return;
+            }
+
+            // Find one entry of this type to equip
+            FGuid ItemIdToEquip;
+            for (const FItemEntry& E : Inventory->GetEntries())
+            {
+                if (E.Def == ItemType)
+                {
+                    ItemIdToEquip = E.ItemId;
+                    break;
+                }
+            }
+            if (!ItemIdToEquip.IsValid())
+            {
+                UE_LOG(LogTemp, Warning, TEXT("[InventoryScreen] Equip aborted: no entry of type %s in inventory"), *GetNameSafe(ItemType));
+                return;
+            }
+
+            FText Error;
+            if (EquipComp->EquipFromInventory(ItemIdToEquip, Error))
+            {
+                UE_LOG(LogTemp, Display, TEXT("[InventoryScreen] Equipped %s"), *GetNameSafe(ItemType));
+                // Refresh inventory view and volume readout; equipment panel will also need refresh when present
+                Refresh();
+                UpdateVolumeReadout();
+                if (EquipmentPanel)
+                {
+                    EquipmentPanel->Refresh();
+                }
+            }
+            else
+            {
+                UE_LOG(LogTemp, Warning, TEXT("[InventoryScreen] Equip failed: %s"), *Error.ToString());
+            }
+        }) ];
+    }
+
     MenuVBox->AddSlot().AutoHeight().Padding(2.f)[ MakeStyledRow(TEXT("Drop"), [this, ItemType]()
     {
         UE_LOG(LogTemp, Display, TEXT("[InventoryScreen] Drop requested: %s"), *GetNameSafe(ItemType));
@@ -1163,75 +1349,12 @@ void UInventoryScreenWidget::OpenContextMenu(UItemDefinition* ItemType, const FV
         APlayerController* PC = GetOwningPlayer();
         APawn* Pawn = PC ? PC->GetPawn() : nullptr;
 
-        // Compute a safe, wall-aware drop location using the player's camera
-        const float ForwardDist = 150.f;           // max distance ahead of camera
-        const float BackOff = 10.f;                // pull back from impact point along forward
-        const float UpOffset = 10.f;               // lift slightly off the surface
-        const float FloorProbeUp = 50.f;
-        const float FloorProbeDown = 200.f;
-
-        FVector ViewLoc = FVector::ZeroVector;
-        FRotator ViewRot = FRotator::ZeroRotator;
-        if (PC)
-        {
-            PC->GetPlayerViewPoint(ViewLoc, ViewRot);
-        }
-        else if (Pawn)
-        {
-            ViewLoc = Pawn->GetActorLocation() + FVector(0,0,50);
-            ViewRot = Pawn->GetActorRotation();
-        }
-
-        const FVector Forward = ViewRot.Vector();
-        const FVector TraceEnd = ViewLoc + Forward * ForwardDist;
-
-        FCollisionQueryParams QParams(SCENE_QUERY_STAT(InventoryDrop), /*bTraceComplex*/ false, Pawn);
-        FHitResult Hit;
-        bool bHit = World->LineTraceSingleByChannel(Hit, ViewLoc, TraceEnd, ECC_Visibility, QParams);
-
-        FVector SpawnLoc = FVector::ZeroVector;
-        if (bHit && Hit.bBlockingHit)
-        {
-            // Place just in front of the hit surface on our side
-            SpawnLoc = Hit.ImpactPoint - Forward * BackOff + Hit.ImpactNormal * UpOffset;
-        }
-        else
-        {
-            // No obstacle straight ahead: try to find the floor at the forward point
-            const FVector ProbeStart = TraceEnd + FVector(0,0,FloorProbeUp);
-            const FVector ProbeEnd = TraceEnd - FVector(0,0,FloorProbeDown);
-            FHitResult FloorHit;
-            if (World->LineTraceSingleByChannel(FloorHit, ProbeStart, ProbeEnd, ECC_Visibility, QParams) && FloorHit.bBlockingHit)
-            {
-                SpawnLoc = FloorHit.ImpactPoint + FVector(0,0,UpOffset);
-            }
-            else
-            {
-                // Fallback: air drop slightly in front of camera
-                SpawnLoc = TraceEnd + FVector(0,0,UpOffset);
-            }
-        }
-
-        // Face the player's yaw if available
-        FRotator SpawnRot = FRotator::ZeroRotator;
-        if (Pawn)
-        {
-            SpawnRot = FRotator(0.f, Pawn->GetActorRotation().Yaw, 0.f);
-        }
-        else if (PC)
-        {
-            SpawnRot = FRotator(0.f, ViewRot.Yaw, 0.f);
-        }
-
         FActorSpawnParameters Params;
         // Do not spawn if colliding; we will roll back the inventory removal to avoid item loss
         Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
 
-        // Compose final spawn transform by applying the item's DefaultDropTransform relative to our computed base location/rotation
-        FTransform BaseTransform(SpawnRot, SpawnLoc, FVector(1.f,1.f,1.f));
-        FTransform FinalTransform = ItemType ? ItemType->DefaultDropTransform * BaseTransform : BaseTransform;
-
-        AItemPickup* Pickup = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), FinalTransform, Params);
+        const AActor* Context = Pawn ? static_cast<AActor*>(Pawn) : static_cast<AActor*>(PC);
+        AItemPickup* Pickup = AItemPickup::SpawnDropped(World, Context, ItemType, Params);
         if (!Pickup)
         {
             UE_LOG(LogTemp, Error, TEXT("[InventoryScreen] Failed to spawn AItemPickup at safe location; restoring item to inventory"));
@@ -1239,17 +1362,14 @@ void UInventoryScreenWidget::OpenContextMenu(UItemDefinition* ItemType, const FV
             Refresh();
             return;
         }
-        Pickup->SetItemDef(ItemType);
-        UE_LOG(LogTemp, Display, TEXT("[InventoryScreen] Dropped one %s at %s"), *GetNameSafe(ItemType), *FinalTransform.GetLocation().ToCompactString());
+        UE_LOG(LogTemp, Display, TEXT("[InventoryScreen] Dropped one %s at %s"), *GetNameSafe(ItemType), *Pickup->GetActorLocation().ToCompactString());
 
         // Update UI
         Refresh();
     }) ];
 
-    MenuVBox->AddSlot().AutoHeight().Padding(2.f)[ MakeStyledRow(TEXT("Equip"), [ItemType]()
-    {
-        UE_LOG(LogTemp, Display, TEXT("[InventoryScreen] Equip requested: %s"), *GetNameSafe(ItemType));
-    }) ];
+    // Note: "Equip" action is added earlier only when the item is equippable (ItemType->bEquippable).
+    // Do not add a generic Equip here to avoid duplicate menu entries.
 
     // Assign to Hotbar (hover to open submenu)
     MenuVBox->AddSlot().AutoHeight().Padding(2.f)[ MakeAssignRow() ];

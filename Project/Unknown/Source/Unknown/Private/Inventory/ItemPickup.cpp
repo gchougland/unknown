@@ -2,6 +2,9 @@
 #include "Components/StaticMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Inventory/ItemDefinition.h"
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/Pawn.h"
 
 AItemPickup::AItemPickup(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -72,8 +75,8 @@ void AItemPickup::ApplyVisualsFromDef()
 
 void AItemPickup::SetItemDef(UItemDefinition* InDef)
 {
-	ItemDef = InDef;
-	ApplyVisualsFromDef();
+    ItemDef = InDef;
+    ApplyVisualsFromDef();
 }
 
 void AItemPickup::OnConstruction(const FTransform& Transform)
@@ -89,3 +92,84 @@ void AItemPickup::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 	ApplyVisualsFromDef();
 }
 #endif
+
+FTransform AItemPickup::BuildDropTransform(const AActor* ContextActor, const UItemDefinition* Def,
+    float ForwardDist, float BackOff, float UpOffset, float FloorProbeUp, float FloorProbeDown)
+{
+    if (!ContextActor)
+    {
+        // No context; just return the definition's drop transform as world (unlikely path)
+        return Def ? Def->DefaultDropTransform : FTransform::Identity;
+    }
+
+    const UWorld* World = ContextActor->GetWorld();
+    FVector ViewLoc = ContextActor->GetActorLocation() + FVector(0,0,50);
+    FRotator ViewRot = ContextActor->GetActorRotation();
+
+    const APawn* AsPawn = Cast<APawn>(ContextActor);
+    const APlayerController* PC = nullptr;
+    if (AsPawn)
+    {
+        PC = Cast<APlayerController>(AsPawn->GetController());
+    }
+    else
+    {
+        PC = Cast<APlayerController>(ContextActor);
+    }
+    if (PC)
+    {
+        PC->GetPlayerViewPoint(ViewLoc, ViewRot);
+    }
+
+    const FVector Forward = ViewRot.Vector();
+    const FVector TraceEnd = ViewLoc + Forward * ForwardDist;
+
+    FVector SpawnLoc = TraceEnd + FVector(0,0,UpOffset);
+    FRotator SpawnRot = FRotator(0.f, ViewRot.Yaw, 0.f);
+
+    if (World)
+    {
+        FCollisionQueryParams QParams(SCENE_QUERY_STAT(ItemDrop), /*bTraceComplex*/ false, AsPawn);
+        FHitResult Hit;
+        const bool bHit = World->LineTraceSingleByChannel(Hit, ViewLoc, TraceEnd, ECC_Visibility, QParams);
+        if (bHit && Hit.bBlockingHit)
+        {
+            SpawnLoc = Hit.ImpactPoint - Forward * BackOff + Hit.ImpactNormal * UpOffset;
+        }
+        else
+        {
+            const FVector ProbeStart = TraceEnd + FVector(0,0,FloorProbeUp);
+            const FVector ProbeEnd = TraceEnd - FVector(0,0,FloorProbeDown);
+            FHitResult FloorHit;
+            if (World->LineTraceSingleByChannel(FloorHit, ProbeStart, ProbeEnd, ECC_Visibility, QParams) && FloorHit.bBlockingHit)
+            {
+                SpawnLoc = FloorHit.ImpactPoint + FVector(0,0,UpOffset);
+            }
+        }
+
+        // If we have a pawn, prefer aligning to pawn yaw
+        if (AsPawn)
+        {
+            SpawnRot = FRotator(0.f, AsPawn->GetActorRotation().Yaw, 0.f);
+        }
+    }
+
+    const FTransform BaseTransform(SpawnRot, SpawnLoc, FVector(1.f,1.f,1.f));
+    return Def ? (Def->DefaultDropTransform * BaseTransform) : BaseTransform;
+}
+
+AItemPickup* AItemPickup::SpawnDropped(UWorld* World, const AActor* ContextActor, UItemDefinition* Def,
+    const FActorSpawnParameters& Params)
+{
+    if (!World)
+    {
+        return nullptr;
+    }
+    const FTransform SpawnXform = BuildDropTransform(ContextActor, Def);
+    AItemPickup* Pickup = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), SpawnXform, Params);
+    if (Pickup)
+    {
+        Pickup->SetItemDef(Def);
+    }
+    return Pickup;
+}
