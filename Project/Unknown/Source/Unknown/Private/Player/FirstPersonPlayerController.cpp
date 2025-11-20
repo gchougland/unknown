@@ -693,7 +693,7 @@ void AFirstPersonPlayerController::ToggleInventory()
 		if (InventoryScreen)
 		{
 			InventoryScreen->AddToViewport(900);
-			InventoryScreen->SetAnchorsInViewport(FAnchors(0.1f, 0.1f, 0.9f, 0.9f));
+			InventoryScreen->SetAnchorsInViewport(FAnchors(0.2f, 0.2f, 0.8f, 0.8f));
 			InventoryScreen->SetAlignmentInViewport(FVector2D(0.f, 0.f));
 			// Close the inventory when the widget requests it (Tab/I/Esc)
 			InventoryScreen->OnRequestClose.AddDynamic(this, &AFirstPersonPlayerController::ToggleInventory);

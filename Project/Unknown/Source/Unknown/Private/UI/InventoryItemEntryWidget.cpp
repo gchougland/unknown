@@ -13,9 +13,8 @@
 #include "Input/Events.h"
 #include "Framework/Application/SlateApplication.h"
 // Icon subsystem integration
-#include "Icons/ItemIconSubsystem.h"
-#include "Icons/ItemIconSettings.h"
-#include "Icons/ItemIconTypes.h"
+#include "UI/ItemIconHelper.h"
+#include "UI/InventoryUIConstants.h"
 #include "UI/ProjectStyle.h"
 
 void UInventoryItemEntryWidget::SetData(UItemDefinition* InDef, int32 InCount, float InTotalVolume)
@@ -99,7 +98,7 @@ static UBorder* MakeCell(UPanelWidget* Parent, UWidgetTree* WidgetTree, float Fi
     UBorder* Inner = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
     ApplyBorderBrush(Inner, FLinearColor(0.f, 0.f, 0.f, 0.85f));
     // Symmetric padding and vertical centering
-    Inner->SetPadding(FMargin(6.f, 4.f));
+    Inner->SetPadding(FMargin(InventoryUIConstants::Padding_InnerTiny, InventoryUIConstants::Padding_Cell));
     Inner->SetHorizontalAlignment(HAlign_Fill);
     Inner->SetVerticalAlignment(VAlign_Center);
     Size->SetContent(Inner);
@@ -131,7 +130,7 @@ void UInventoryItemEntryWidget::RebuildUI()
 	RootBorder->SetContent(RowHBox);
 
  // Icon cell (fixed)
- UBorder* IconCell = MakeCell(RowHBox, WidgetTree, 56.f, BorderColor);
+ UBorder* IconCell = MakeCell(RowHBox, WidgetTree, InventoryUIConstants::ColumnWidth_Icon, BorderColor);
  IconImage = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("Icon"));
  if (IconCell)
  {
@@ -139,12 +138,12 @@ void UInventoryItemEntryWidget::RebuildUI()
  }
 	
  // Name (widest)
- UBorder* NameCell = MakeCell(RowHBox, WidgetTree, 420.f, BorderColor);
+ UBorder* NameCell = MakeCell(RowHBox, WidgetTree, InventoryUIConstants::ColumnWidth_Name, BorderColor);
  NameText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("Name"));
  NameText->SetColorAndOpacity(TextColor);
  if (NameText)
  {
-     NameText->SetFont(ProjectStyle::GetMonoFont(14));
+     NameText->SetFont(ProjectStyle::GetMonoFont(InventoryUIConstants::FontSize_ItemEntry));
  }
  if (NameCell)
  {
@@ -152,12 +151,12 @@ void UInventoryItemEntryWidget::RebuildUI()
  }
 
  // Quantity
- UBorder* QtyCell = MakeCell(RowHBox, WidgetTree, 80.f, BorderColor);
+ UBorder* QtyCell = MakeCell(RowHBox, WidgetTree, InventoryUIConstants::ColumnWidth_Quantity, BorderColor);
  CountText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("Count"));
  CountText->SetColorAndOpacity(TextColor);
  if (CountText)
  {
-     CountText->SetFont(ProjectStyle::GetMonoFont(14));
+     CountText->SetFont(ProjectStyle::GetMonoFont(InventoryUIConstants::FontSize_ItemEntry));
  }
  if (QtyCell)
  {
@@ -165,12 +164,12 @@ void UInventoryItemEntryWidget::RebuildUI()
  }
 
  // Mass
- UBorder* MassCell = MakeCell(RowHBox, WidgetTree, 100.f, BorderColor);
+ UBorder* MassCell = MakeCell(RowHBox, WidgetTree, InventoryUIConstants::ColumnWidth_Mass, BorderColor);
  MassText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("Mass"));
  MassText->SetColorAndOpacity(TextColor);
  if (MassText)
  {
-     MassText->SetFont(ProjectStyle::GetMonoFont(14));
+     MassText->SetFont(ProjectStyle::GetMonoFont(InventoryUIConstants::FontSize_ItemEntry));
  }
  if (MassCell)
  {
@@ -178,12 +177,12 @@ void UInventoryItemEntryWidget::RebuildUI()
  }
 
  // Volume
- UBorder* VolCell = MakeCell(RowHBox, WidgetTree, 100.f, BorderColor);
+ UBorder* VolCell = MakeCell(RowHBox, WidgetTree, InventoryUIConstants::ColumnWidth_Volume, BorderColor);
  VolumeText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("Volume"));
  VolumeText->SetColorAndOpacity(TextColor);
  if (VolumeText)
  {
-     VolumeText->SetFont(ProjectStyle::GetMonoFont(14));
+     VolumeText->SetFont(ProjectStyle::GetMonoFont(InventoryUIConstants::FontSize_ItemEntry));
  }
  if (VolCell)
  {
@@ -223,88 +222,46 @@ void UInventoryItemEntryWidget::Refresh()
  }
     if (IconImage)
     {
-        const FVector2D IconSize(48.f, 48.f);
-        if (Def && Def->IconOverride)
+        const FVector2D IconSize = InventoryUIConstants::IconSize_ItemEntry_Vec;
+        if (Def)
         {
-            // Immediate use of override
-            FSlateBrush Brush;
-            Brush.DrawAs = ESlateBrushDrawType::Image;
-            Brush.SetResourceObject(Def->IconOverride);
-            Brush.ImageSize = IconSize;
-            IconImage->SetBrush(Brush);
-            IconImage->SetVisibility(ESlateVisibility::Visible);
-            IconImage->SetOpacity(1.f);
-        }
-        else if (Def)
-        {
-            // Try runtime icon subsystem
-            if (UItemIconSubsystem* IconSys = UItemIconSubsystem::Get())
+            const FItemIconStyle Style = ItemIconHelper::CreateIconStyle();
+            
+            // Try synchronous load first
+            UTexture2D* IconTex = ItemIconHelper::LoadIconSync(Def, Style);
+            if (IconTex)
             {
-                FItemIconStyle Style;
-                if (const UItemIconSettings* Settings = UItemIconSettings::Get())
-                {
-                    Style.Resolution = Settings->DefaultResolution;
-                    Style.Background = Settings->bTransparentBackground ? EItemIconBackground::Transparent : EItemIconBackground::SolidColor;
-                    Style.SolidColor = Settings->SolidBackgroundColor;
-                    Style.StyleVersion = Settings->StyleVersion;
-                }
-
-                if (UTexture2D* Cached = IconSys->GetIconIfReady(Def, Style))
-                {
-                    FSlateBrush Brush;
-                    Brush.DrawAs = ESlateBrushDrawType::Image;
-                    Brush.SetResourceObject(Cached);
-                    Brush.ImageSize = IconSize;
-                    IconImage->SetBrush(Brush);
-                    IconImage->SetVisibility(ESlateVisibility::Visible);
-                    IconImage->SetOpacity(1.f);
-                }
-                else
-                {
-                    // Placeholder while waiting
-                    IconImage->SetBrush(FSlateBrush());
-                    IconImage->SetOpacity(0.f);
-                    IconImage->SetVisibility(ESlateVisibility::Visible);
-
-                    TWeakObjectPtr<UInventoryItemEntryWidget> WeakThis(this);
-                    TWeakObjectPtr<UImage> WeakImage(IconImage);
-                    UItemDefinition* RequestedDef = Def; // capture current
-                    FOnItemIconReady Callback = FOnItemIconReady::CreateLambda([WeakThis, WeakImage, RequestedDef, IconSize](const UItemDefinition* ReadyDef, UTexture2D* ReadyTex)
-                    {
-                        if (!WeakThis.IsValid() || !WeakImage.IsValid() || ReadyTex == nullptr)
-                        {
-                            return;
-                        }
-                        // Ensure row still represents the same item type
-                        if (WeakThis->Def != RequestedDef)
-                        {
-                            return;
-                        }
-                        FSlateBrush Brush;
-                        Brush.DrawAs = ESlateBrushDrawType::Image;
-                        Brush.SetResourceObject(ReadyTex);
-                        Brush.ImageSize = IconSize;
-                        WeakImage->SetBrush(Brush);
-                        WeakImage->SetOpacity(1.f);
-                        WeakImage->SetVisibility(ESlateVisibility::Visible);
-                    });
-                    IconSys->RequestIcon(Def, Style, MoveTemp(Callback));
-                }
+                ItemIconHelper::ApplyIconToImage(IconImage, IconTex, IconSize);
             }
             else
             {
-                // No subsystem - clear icon
-                IconImage->SetBrush(FSlateBrush());
-                IconImage->SetOpacity(0.f);
-                IconImage->SetVisibility(ESlateVisibility::Visible);
+                // Clear icon while waiting
+                ItemIconHelper::ApplyIconToImage(IconImage, nullptr, IconSize);
+                
+                // Request async load
+                TWeakObjectPtr<UInventoryItemEntryWidget> WeakThis(this);
+                TWeakObjectPtr<UImage> WeakImage(IconImage);
+                UItemDefinition* RequestedDef = Def;
+                FOnItemIconReady Callback = FOnItemIconReady::CreateLambda([WeakThis, WeakImage, RequestedDef, IconSize](const UItemDefinition* ReadyDef, UTexture2D* ReadyTex)
+                {
+                    if (!WeakThis.IsValid() || !WeakImage.IsValid() || ReadyTex == nullptr)
+                    {
+                        return;
+                    }
+                    // Ensure row still represents the same item type
+                    if (WeakThis->Def != RequestedDef)
+                    {
+                        return;
+                    }
+                    ItemIconHelper::ApplyIconToImage(WeakImage.Get(), ReadyTex, IconSize);
+                });
+                ItemIconHelper::LoadIconAsync(Def, Style, MoveTemp(Callback));
             }
         }
         else
         {
-            // No definition
-            IconImage->SetBrush(FSlateBrush());
-            IconImage->SetOpacity(0.f);
-            IconImage->SetVisibility(ESlateVisibility::Visible);
+            // No definition - clear icon
+            ItemIconHelper::ApplyIconToImage(IconImage, nullptr, IconSize);
         }
     }
     if (RootBorder)

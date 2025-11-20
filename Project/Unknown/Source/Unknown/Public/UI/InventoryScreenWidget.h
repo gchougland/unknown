@@ -43,13 +43,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Inventory")
 	void SetTerminalStyle(const FLinearColor& InBackground, const FLinearColor& InBorder, const FLinearColor& InText);
 
-	// Current selection helper for controller shortcuts (1–9 assign)
+    // Current selection helper for controller shortcuts (1–9 assign)
 	UFUNCTION(BlueprintPure, Category="Inventory")
 	UItemDefinition* GetSelectedItemType() const;
 
 	// External/API: request a UI refresh from outside (e.g., after picking up an item)
 	UFUNCTION(BlueprintCallable, Category="Inventory")
 	void RefreshInventoryView();
+
+	// Getters for context menu actions
+	UInventoryComponent* GetInventory() const { return Inventory; }
+	UEquipmentComponent* GetEquipment() const { return Equipment; }
 
     // Fired when the user presses Tab/I/Escape inside the widget
     UPROPERTY(BlueprintAssignable, Category="Inventory|Events")
@@ -134,7 +138,15 @@ protected:
 private:
     void UpdateVolumeReadout();
     void UpdateInfoPanelForDef(UItemDefinition* Def);
+    void UpdateInfoText(UItemDefinition* Def);
+    void UpdateInfoIcon(UItemDefinition* Def);
     void ClearInfoPanel();
+
+    // Helper methods for Open()
+    void ResolveComponents(UInventoryComponent* InInventory, UStorageComponent* InStorage);
+    void BindEvents();
+    void InitializeUI();
+    void PrewarmIcons();
 
     // Equipment access for RMB EQUIP and equipment panel (set during Open)
     UPROPERTY(Transient)

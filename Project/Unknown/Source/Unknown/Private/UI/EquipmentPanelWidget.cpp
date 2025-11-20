@@ -2,8 +2,7 @@
 #include "Inventory/EquipmentComponent.h"
 #include "Inventory/ItemDefinition.h"
 #include "Inventory/ItemTypes.h"
-#include "Icons/ItemIconSubsystem.h"
-#include "Icons/ItemIconSettings.h"
+#include "UI/ItemIconHelper.h"
 #include "Components/VerticalBox.h"
 #include "Components/TextBlock.h"
 #include "Components/Border.h"
@@ -326,58 +325,44 @@ void UEquipmentPanelWidget::UpdateSlot(EEquipmentSlot InSlot)
         {
             ItemText = Entry.Def->DisplayName.IsEmpty() ? FText::FromString(Entry.Def->GetName()) : Entry.Def->DisplayName;
 
-            if (UItemIconSubsystem* IconSys = UItemIconSubsystem::Get())
+            // Use transparent background for equipment slots
+            EItemIconBackground TransparentBg = EItemIconBackground::Transparent;
+            const FItemIconStyle Style = ItemIconHelper::CreateIconStyle(0, &TransparentBg);
+            
+            IconTex = ItemIconHelper::LoadIconSync(Entry.Def, Style);
+            
+            if (!IconTex)
             {
-                FItemIconStyle Style;
-                // Build style consistently with project settings to hit cache keys
-                if (const UItemIconSettings* Settings = UItemIconSettings::Get())
+                // Request async load
+                TWeakPtr<SImage> WeakImg = IconImg;
+                TWeakObjectPtr<UEquipmentPanelWidget> WeakThis(this);
+                const EEquipmentSlot SlotCopy = InSlot;
+                UItemDefinition* Requested = Entry.Def;
+                const FVector2D IconSize(36.f, 36.f);
+                FOnItemIconReady Callback = FOnItemIconReady::CreateLambda([WeakImg, WeakThis, Requested, SlotCopy, IconSize](const UItemDefinition* ReadyDef, UTexture2D* ReadyTex)
                 {
-                    Style.Resolution = FMath::Max(64, Settings->DefaultResolution);
-                    Style.Background = EItemIconBackground::Transparent; // transparent looks better in slot box
-                    Style.SolidColor = Settings->SolidBackgroundColor;
-                    Style.StyleVersion = Settings->StyleVersion;
-                }
-                else
-                {
-                    Style.Resolution = 256;
-                    Style.Background = EItemIconBackground::Transparent;
-                }
-
-                if (UTexture2D* Cached = IconSys->GetIconIfReady(Entry.Def, Style))
-                {
-                    IconTex = Cached;
-                }
-                else
-                {
-                    TWeakPtr<SImage> WeakImg = IconImg;
-                    TWeakObjectPtr<UEquipmentPanelWidget> WeakThis(this);
-                    const EEquipmentSlot SlotCopy = InSlot;
-                    UItemDefinition* Requested = Entry.Def;
-                    FOnItemIconReady Callback = FOnItemIconReady::CreateLambda([WeakImg, WeakThis, Requested, SlotCopy](const UItemDefinition* ReadyDef, UTexture2D* ReadyTex)
+                    if (!ReadyTex || ReadyDef != Requested)
                     {
-                        if (!ReadyTex || ReadyDef != Requested)
+                        return;
+                    }
+                    if (!WeakThis.IsValid())
+                    {
+                        return;
+                    }
+                    if (TSharedPtr<SImage> Img = WeakImg.Pin())
+                    {
+                        if (WeakThis->Cache)
                         {
-                            return;
+                            WeakThis->Cache->StaticSlotBrushes.FindOrAdd(SlotCopy) = FSlateBrush();
+                            FSlateBrush& B2 = WeakThis->Cache->StaticSlotBrushes[SlotCopy];
+                            B2.DrawAs = ESlateBrushDrawType::Image;
+                            B2.ImageSize = IconSize;
+                            B2.SetResourceObject(ReadyTex);
+                            Img->SetImage(&B2);
                         }
-                        if (!WeakThis.IsValid())
-                        {
-                            return;
-                        }
-                        if (TSharedPtr<SImage> Img = WeakImg.Pin())
-                        {
-                            if (WeakThis->Cache)
-                            {
-                                WeakThis->Cache->StaticSlotBrushes.FindOrAdd(SlotCopy) = FSlateBrush();
-                                FSlateBrush& B2 = WeakThis->Cache->StaticSlotBrushes[SlotCopy];
-                                B2.DrawAs = ESlateBrushDrawType::Image;
-                                B2.ImageSize = FVector2D(36.f, 36.f);
-                                B2.SetResourceObject(ReadyTex);
-                                Img->SetImage(&B2);
-                            }
-                        }
-                    });
-                    IconSys->RequestIcon(Entry.Def, Style, MoveTemp(Callback));
-                }
+                    }
+                });
+                ItemIconHelper::LoadIconAsync(Entry.Def, Style, MoveTemp(Callback));
             }
         }
     }

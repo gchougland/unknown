@@ -61,21 +61,24 @@ protected:
     virtual void NativeDestruct() override;
 
 	void RebuildSlots();
- void RefreshAll();
- void RefreshSlotVisual(int32 Index);
+	void RefreshAll();
+	void RefreshSlotVisual(int32 Index);
+	void UpdateSlotBackground(int32 Index);
+	void UpdateSlotIcon(int32 Index);
+	void UpdateSlotQuantity(int32 Index);
 
- UFUNCTION()
- void OnSlotAssigned(int32 Index, UItemDefinition* ItemType);
+	UFUNCTION()
+	void OnSlotAssigned(int32 Index, UItemDefinition* ItemType);
 
- UFUNCTION()
- void OnActiveChanged(int32 NewIndex, FGuid ItemId);
+	UFUNCTION()
+	void OnActiveChanged(int32 NewIndex, FGuid ItemId);
 
- // Inventory change handlers to keep quantities in sync
- UFUNCTION()
- void OnInventoryItemAdded(const FItemEntry& Item);
+	// Inventory change handlers to keep quantities in sync
+	UFUNCTION()
+	void OnInventoryItemAdded(const FItemEntry& Item);
 
- UFUNCTION()
- void OnInventoryItemRemoved(const FGuid& ItemId);
+	UFUNCTION()
+	void OnInventoryItemRemoved(const FGuid& ItemId);
 
 	// Bound hotbar comp
 	UPROPERTY()
@@ -88,15 +91,15 @@ protected:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<class UBorder>> SlotBorders;
 
- UPROPERTY(Transient)
- TArray<TObjectPtr<class UImage>> SlotIcons;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UImage>> SlotIcons;
 
- UPROPERTY(Transient)
- TArray<TObjectPtr<class UTextBlock>> SlotLabels;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UTextBlock>> SlotLabels;
 
- // Per-slot hotkey labels (top-left corner, always visible)
- UPROPERTY(Transient)
- TArray<TObjectPtr<class UTextBlock>> SlotHotkeys;
+	// Per-slot hotkey labels (top-left corner, always visible)
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UTextBlock>> SlotHotkeys;
 
     // Bound inventory for live quantity updates
     UPROPERTY(Transient)
