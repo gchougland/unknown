@@ -43,6 +43,13 @@ namespace InventoryContextMenuActions
             return false;
         }
 
+        // Check if character is already holding an item
+        if (Character->IsHoldingItem())
+        {
+            // Put the currently held item back first
+            Character->PutHeldItemBack();
+        }
+
         // Find the first item entry of this type in the inventory
         FItemEntry ItemToHold;
         bool bFound = false;
@@ -62,10 +69,12 @@ namespace InventoryContextMenuActions
             return false;
         }
 
-        // Hold the item (this will spawn the actor and attach it to the socket)
+        // Hold the item (this will remove from inventory, spawn actor, and attach to socket)
         if (Character->HoldItem(ItemToHold))
         {
             UE_LOG(LogTemp, Display, TEXT("[InventoryScreen] Successfully holding %s"), *GetNameSafe(ItemType));
+            // Refresh inventory view after hold operation
+            Widget->RefreshInventoryView();
             return true;
         }
         else

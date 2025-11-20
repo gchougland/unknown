@@ -110,8 +110,14 @@ public:
 	bool HoldItem(const FItemEntry& ItemEntry);
 
 	// Release the currently held item (removes from world)
+	// If bTryPutBack is true, attempts to put item back in inventory or drop it
+	// If false, just destroys the held actor (for cases where item was already removed from inventory)
 	UFUNCTION(BlueprintCallable, Category="Inventory")
-	void ReleaseHeldItem();
+	void ReleaseHeldItem(bool bTryPutBack = true);
+	
+	// Put the currently held item back into inventory (or drop if full)
+	UFUNCTION(BlueprintCallable, Category="Inventory")
+	bool PutHeldItemBack();
 
 	// Check if an item is currently being held
 	UFUNCTION(BlueprintPure, Category="Inventory")
@@ -145,4 +151,8 @@ protected:
     // Equipment component (manages equipping and effects)
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Inventory", meta=(AllowPrivateAccess="true"))
     TObjectPtr<UEquipmentComponent> Equipment;
+    
+private:
+    // Helper to refresh UI if inventory screen is open
+    void RefreshUIIfInventoryOpen();
 };

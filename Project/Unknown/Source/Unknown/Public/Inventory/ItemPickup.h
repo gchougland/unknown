@@ -8,6 +8,7 @@
 class UStaticMeshComponent;
 class UItemDefinition;
 struct FPropertyChangedEvent;
+struct FItemEntry;
 
 #include "ItemPickup.generated.h"
 
@@ -27,10 +28,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Pickup")
 	TObjectPtr<UItemDefinition> ItemDef;
 
+	// Item metadata (ItemId and CustomData)
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Pickup")
+	FGuid ItemId;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Pickup")
+	TMap<FName, FString> CustomData;
+
 	UFUNCTION(BlueprintPure, Category="Pickup")
 	UItemDefinition* GetItemDef() const { return ItemDef; }
     UFUNCTION(BlueprintCallable, Category="Pickup")
     void SetItemDef(UItemDefinition* InDef);
+    
+    UFUNCTION(BlueprintCallable, Category="Pickup")
+    void SetItemEntry(const FItemEntry& Entry);
+    
+    UFUNCTION(BlueprintPure, Category="Pickup")
+    FItemEntry GetItemEntry() const;
 
     // Unified drop helpers
 public:
@@ -47,8 +61,17 @@ public:
     /**
      * Spawn a dropped pickup for the given item definition using the unified BuildDropTransform().
      * Returns the newly spawned actor (or nullptr if spawning failed due to collision rules in Params).
+     * @deprecated Use DropItemToWorld() instead to preserve metadata
      */
     static AItemPickup* SpawnDropped(UWorld* World, const AActor* ContextActor, UItemDefinition* Def,
+        const FActorSpawnParameters& Params);
+    
+    /**
+     * Unified drop helper that drops an item to the world with proper physics/collision settings.
+     * Sets gravity ON, interactable channel BLOCK, and preserves ItemId and CustomData.
+     * Returns the spawned pickup actor or nullptr if spawning failed.
+     */
+    static AItemPickup* DropItemToWorld(UWorld* World, const AActor* ContextActor, const FItemEntry& Entry,
         const FActorSpawnParameters& Params);
 
 protected:

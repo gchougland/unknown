@@ -41,6 +41,10 @@ public:
 
 	// Utility for clamping pitch
 	static float ClampPitchDegrees(float Degrees);
+	
+	// Getter for inventory screen widget (for UI refresh)
+	UFUNCTION(BlueprintPure, Category="UI")
+	UInventoryScreenWidget* GetInventoryScreen() const { return InventoryScreen; }
 
 protected:
 	// APlayerController

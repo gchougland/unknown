@@ -69,7 +69,8 @@ namespace InventoryContextMenuActions
         Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
 
         const AActor* Context = Pawn ? static_cast<AActor*>(Pawn) : static_cast<AActor*>(PC);
-        AItemPickup* Pickup = AItemPickup::SpawnDropped(World, Context, ItemType, Params);
+        // Use unified drop helper to preserve metadata
+        AItemPickup* Pickup = AItemPickup::DropItemToWorld(World, Context, EntryToDrop, Params);
         if (!Pickup)
         {
             UE_LOG(LogTemp, Error, TEXT("[InventoryScreen] Failed to spawn AItemPickup at safe location; restoring item to inventory"));

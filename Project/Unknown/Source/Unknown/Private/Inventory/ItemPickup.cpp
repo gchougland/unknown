@@ -2,12 +2,14 @@
 #include "Components/StaticMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Inventory/ItemDefinition.h"
+#include "Inventory/ItemTypes.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
 
 AItemPickup::AItemPickup(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
+	, ItemId(FGuid())
 {
 	Mesh = ObjectInitializer.CreateDefaultSubobject<UStaticMeshComponent>(this, TEXT("Mesh"));
 	SetRootComponent(Mesh);
@@ -77,6 +79,23 @@ void AItemPickup::SetItemDef(UItemDefinition* InDef)
 {
     ItemDef = InDef;
     ApplyVisualsFromDef();
+}
+
+void AItemPickup::SetItemEntry(const FItemEntry& Entry)
+{
+    ItemDef = Entry.Def;
+    ItemId = Entry.ItemId;
+    CustomData = Entry.CustomData;
+    ApplyVisualsFromDef();
+}
+
+FItemEntry AItemPickup::GetItemEntry() const
+{
+    FItemEntry Entry;
+    Entry.Def = ItemDef;
+    Entry.ItemId = ItemId;
+    Entry.CustomData = CustomData;
+    return Entry;
 }
 
 void AItemPickup::OnConstruction(const FTransform& Transform)
@@ -171,5 +190,38 @@ AItemPickup* AItemPickup::SpawnDropped(UWorld* World, const AActor* ContextActor
     {
         Pickup->SetItemDef(Def);
     }
+    return Pickup;
+}
+
+AItemPickup* AItemPickup::DropItemToWorld(UWorld* World, const AActor* ContextActor, const FItemEntry& Entry,
+    const FActorSpawnParameters& Params)
+{
+    if (!World || !Entry.IsValid() || !Entry.Def)
+    {
+        return nullptr;
+    }
+    
+    const FTransform SpawnXform = BuildDropTransform(ContextActor, Entry.Def);
+    AItemPickup* Pickup = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), SpawnXform, Params);
+    if (!Pickup)
+    {
+        return nullptr;
+    }
+    
+    // Set the full item entry (includes metadata)
+    Pickup->SetItemEntry(Entry);
+    
+    // Configure physics for dropped items: gravity ON, interactable channel BLOCK
+    if (UStaticMeshComponent* ItemMesh = Pickup->Mesh)
+    {
+        ItemMesh->SetSimulatePhysics(true);
+        ItemMesh->SetEnableGravity(true);
+        ItemMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+        ItemMesh->SetCollisionObjectType(ECC_WorldDynamic);
+        ItemMesh->SetCollisionResponseToAllChannels(ECR_Block);
+        // Ensure interactable channel blocks
+        ItemMesh->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Block);
+    }
+    
     return Pickup;
 }

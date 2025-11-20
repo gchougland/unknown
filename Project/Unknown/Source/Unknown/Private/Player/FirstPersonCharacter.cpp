@@ -12,6 +12,9 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneComponent.h"
+#include "Player/FirstPersonPlayerController.h"
+#include "UI/InventoryScreenWidget.h"
+#include "GameFramework/PlayerController.h"
 
 AFirstPersonCharacter::AFirstPersonCharacter(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -79,29 +82,94 @@ bool AFirstPersonCharacter::SelectHotbarSlot(int32 Index)
 	{
 		return false;
 	}
+	
+	// Store the currently held item entry before putting it back
+	FItemEntry PreviouslyHeldEntry = HeldItemEntry;
+	bool bWasHolding = IsHoldingItem();
+	
+	// If already holding an item, put it back first
+	if (bWasHolding)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[FirstPersonCharacter] SelectHotbarSlot(%d): Putting back currently held item"), Index);
+		PutHeldItemBack();
+	}
+	
+	// Select the slot - this will set the ActiveItemId for this slot
 	const bool bSelected = Hotbar->SelectSlot(Index, Inventory);
 	if (!bSelected)
 	{
 		return false;
 	}
-	// After selection, try to hold the active item for this slot
+	
+	// Get the ActiveItemId IMMEDIATELY after SelectSlot (before any refresh can change it)
 	const FGuid ActiveId = Hotbar->GetActiveItemId();
+	const UItemDefinition* ExpectedType = Hotbar->GetSlot(Index).AssignedType;
+	UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] SelectHotbarSlot(%d): ActiveId=%s, ExpectedType=%s"), 
+		Index, *ActiveId.ToString(EGuidFormats::DigitsWithHyphensInBraces), *GetNameSafe(ExpectedType));
+	
 	if (ActiveId.IsValid())
 	{
+		// Find the item by the ActiveId that was set by SelectSlot
+		FItemEntry ItemToHold;
+		bool bFound = false;
 		for (const FItemEntry& E : Inventory->GetEntries())
 		{
 			if (E.ItemId == ActiveId)
 			{
-				HoldItem(E);
-				return true;
+				ItemToHold = E;
+				bFound = true;
+				UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] SelectHotbarSlot(%d): Found item %s (ItemId: %s)"), 
+					Index, *GetNameSafe(E.Def), *E.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+				
+				// Verify the item matches the expected type
+				if (ExpectedType && E.Def != ExpectedType)
+				{
+					UE_LOG(LogTemp, Error, TEXT("[FirstPersonCharacter] SelectHotbarSlot(%d): TYPE MISMATCH! Expected %s, got %s"), 
+						Index, *GetNameSafe(ExpectedType), *GetNameSafe(E.Def));
+					// Don't hold if type mismatch
+					return false;
+				}
+				break;
 			}
 		}
-		// Could not find the item by id anymore
-		ReleaseHeldItem();
-		return true;
+		
+		if (bFound)
+		{
+			// Hold the item we found - log exactly what we're passing
+			// Make a local copy to ensure we're not affected by any array modifications
+			FItemEntry ItemToHoldCopy = ItemToHold;
+			UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] SelectHotbarSlot(%d): About to call HoldItem with %s (ItemId: %s)"), 
+				Index, *GetNameSafe(ItemToHoldCopy.Def), *ItemToHoldCopy.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+			
+			// Double-check the copy is correct before calling
+			if (ItemToHoldCopy.Def != ExpectedType)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[FirstPersonCharacter] SelectHotbarSlot(%d): ItemToHoldCopy TYPE MISMATCH! Expected %s, got %s - ABORTING"), 
+					Index, *GetNameSafe(ExpectedType), *GetNameSafe(ItemToHoldCopy.Def));
+				return false;
+			}
+			
+			HoldItem(ItemToHoldCopy);
+			return true;
+		}
+		else
+		{
+			// Could not find the item by id anymore - this shouldn't happen if SelectSlot worked correctly
+			UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] SelectHotbarSlot(%d): ActiveId %s not found in inventory"), 
+				Index, *ActiveId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+			ReleaseHeldItem(false);
+			return true;
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] SelectHotbarSlot(%d): No ActiveId (slot empty or no items of assigned type)"), Index);
 	}
 	// No active item in this slot: release any currently held
-	ReleaseHeldItem();
+	if (bWasHolding)
+	{
+		ReleaseHeldItem(false);
+	}
 	return true;
 }
 
@@ -210,14 +278,30 @@ void AFirstPersonCharacter::OnEndCrouch(float HalfHeightAdjust, float ScaledHalf
 
 bool AFirstPersonCharacter::HoldItem(const FItemEntry& ItemEntry)
 {
+    UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] HoldItem: Called with %s (ItemId: %s)"), 
+        *GetNameSafe(ItemEntry.Def), *ItemEntry.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+    
     if (!ItemEntry.IsValid() || !ItemEntry.Def)
     {
         UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] HoldItem: Invalid item entry"));
         return false;
     }
 
-    // Release any currently held item first
-    ReleaseHeldItem();
+    if (!Inventory)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] HoldItem: Inventory is null"));
+        return false;
+    }
+
+    // Remove item from inventory BEFORE spawning pickup
+    UE_LOG(LogTemp, Verbose, TEXT("[FirstPersonCharacter] HoldItem: Removing ItemId %s from inventory"), 
+        *ItemEntry.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+    if (!Inventory->RemoveById(ItemEntry.ItemId))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] HoldItem: Failed to remove item from inventory (ItemId: %s)"), 
+            *ItemEntry.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+        return false;
+    }
 
     UWorld* World = GetWorld();
     if (!World)
@@ -226,100 +310,226 @@ bool AFirstPersonCharacter::HoldItem(const FItemEntry& ItemEntry)
         // Fall back to a logic-only bind so input/selection logic can still be validated.
         HeldItemEntry = ItemEntry;
         UE_LOG(LogTemp, Verbose, TEXT("[FirstPersonCharacter] HoldItem: World is null; binding entry only (no actor spawn)"));
+        RefreshUIIfInventoryOpen();
         return true;
     }
 
- // Try to use the skeletal mesh/socket if available; otherwise we'll attach to HoldPoint
-	USkeletalMeshComponent* CharacterMesh = GetMesh();
-	const bool bHasMesh = (CharacterMesh != nullptr);
-	const bool bSocketExists = (bHasMesh && CharacterMesh->DoesSocketExist(HandSocketName));
-	if (!bSocketExists)
-	{
-		UE_LOG(LogTemp, Verbose, TEXT("[FirstPersonCharacter] HoldItem: Socket '%s' missing; will use HoldPoint"), *HandSocketName.ToString());
-	}
+    // Try to use the skeletal mesh/socket if available; otherwise we'll attach to HoldPoint
+    USkeletalMeshComponent* CharacterMesh = GetMesh();
+    const bool bHasMesh = (CharacterMesh != nullptr);
+    const bool bSocketExists = (bHasMesh && CharacterMesh->DoesSocketExist(HandSocketName));
+    if (!bSocketExists)
+    {
+        UE_LOG(LogTemp, Verbose, TEXT("[FirstPersonCharacter] HoldItem: Socket '%s' missing; will use HoldPoint"), *HandSocketName.ToString());
+    }
 
-	// Spawn the item pickup actor
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.Owner = this;
-	SpawnParams.Instigator = this;
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+    // Spawn the item pickup actor
+    FActorSpawnParameters SpawnParams;
+    SpawnParams.Owner = this;
+    SpawnParams.Instigator = this;
+    SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	FTransform SpawnTransform = FTransform::Identity;
-	if (bSocketExists)
-	{
-		SpawnTransform = CharacterMesh->GetSocketTransform(HandSocketName);
-	}
-	else
-	{
-		// Fallback: spawn at character location with slight offset
-		SpawnTransform.SetLocation(GetActorLocation() + GetActorForwardVector() * 50.f);
-	}
+    FTransform SpawnTransform = FTransform::Identity;
+    if (bSocketExists)
+    {
+        SpawnTransform = CharacterMesh->GetSocketTransform(HandSocketName);
+    }
+    else if (HoldPoint)
+    {
+        SpawnTransform = HoldPoint->GetComponentTransform();
+    }
+    else
+    {
+        // Fallback: spawn at character location with slight offset
+        SpawnTransform.SetLocation(GetActorLocation() + GetActorForwardVector() * 50.f);
+    }
 
-	HeldItemActor = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), SpawnTransform, SpawnParams);
-	if (!HeldItemActor)
-	{
-		UE_LOG(LogTemp, Error, TEXT("[FirstPersonCharacter] HoldItem: Failed to spawn AItemPickup"));
-		return false;
-	}
+    HeldItemActor = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), SpawnTransform, SpawnParams);
+    if (!HeldItemActor)
+    {
+        UE_LOG(LogTemp, Error, TEXT("[FirstPersonCharacter] HoldItem: Failed to spawn AItemPickup"));
+        // Rollback: try to add item back to inventory
+        Inventory->TryAdd(ItemEntry);
+        RefreshUIIfInventoryOpen();
+        return false;
+    }
 
-	// Set the item definition
-	HeldItemActor->SetItemDef(ItemEntry.Def);
+    // Set the full item entry (includes metadata)
+    HeldItemActor->SetItemEntry(ItemEntry);
 
-	// Configure physics for held item
-	UStaticMeshComponent* ItemMesh = HeldItemActor->Mesh;
-	if (ItemMesh)
-	{
-		// Enable gravity while held (as per user requirement)
-		ItemMesh->SetEnableGravity(true);
-		// Disable physics simulation - we'll attach it instead
-		ItemMesh->SetSimulatePhysics(false);
-		// Set collision to query only (so it doesn't interfere with movement)
-		ItemMesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-		// Make sure it doesn't collide with the character
-		ItemMesh->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
-		// Do not let the held item block the Interactable trace channel
-		ItemMesh->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Ignore);
-		// Also disable overlap generation to avoid spurious interactions
-		ItemMesh->SetGenerateOverlapEvents(false);
-	}
+    // Configure physics for held item: gravity OFF, interactable channel IGNORE
+    UStaticMeshComponent* ItemMesh = HeldItemActor->Mesh;
+    if (ItemMesh)
+    {
+        // Disable gravity while held
+        ItemMesh->SetEnableGravity(false);
+        // Disable physics simulation - we'll attach it instead
+        ItemMesh->SetSimulatePhysics(false);
+        // Set collision to query only (so it doesn't interfere with movement)
+        ItemMesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+        // Make sure it doesn't collide with the character
+        ItemMesh->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+        // Do not let the held item block the Interactable trace channel
+        ItemMesh->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Ignore);
+        // Also disable overlap generation to avoid spurious interactions
+        ItemMesh->SetGenerateOverlapEvents(false);
+    }
 
-	// Attach to socket or HoldPoint/root component
-	if (bSocketExists)
-	{
-		HeldItemActor->AttachToComponent(CharacterMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale, HandSocketName);
-	}
-	else if (HoldPoint)
-	{
-		HeldItemActor->AttachToComponent(HoldPoint, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
-	}
-	else
-	{
-		// Fallback: attach to root component
-		HeldItemActor->AttachToComponent(GetRootComponent(), FAttachmentTransformRules::SnapToTargetNotIncludingScale);
-	}
+    // Attach to socket or HoldPoint/root component
+    if (bSocketExists)
+    {
+        HeldItemActor->AttachToComponent(CharacterMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale, HandSocketName);
+    }
+    else if (HoldPoint)
+    {
+        HeldItemActor->AttachToComponent(HoldPoint, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+    }
+    else
+    {
+        // Fallback: attach to root component
+        HeldItemActor->AttachToComponent(GetRootComponent(), FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+    }
 
-	// Apply per-item default hold transform relative to the attachment parent
-	if (ItemEntry.Def)
-	{
-		HeldItemActor->SetActorRelativeTransform(ItemEntry.Def->DefaultHoldTransform);
-	}
+    // Apply per-item default hold transform relative to the attachment parent
+    if (ItemEntry.Def)
+    {
+        HeldItemActor->SetActorRelativeTransform(ItemEntry.Def->DefaultHoldTransform);
+    }
 
-	// Store the item entry (retain exact ItemId binding)
-	HeldItemEntry = ItemEntry;
+    // Store the item entry (retain exact ItemId binding)
+    HeldItemEntry = ItemEntry;
 
-    UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] HoldItem: Holding %s"), *ItemEntry.Def->DisplayName.ToString());
+    // Refresh hotbar to update active item ID for the currently active slot
+    if (Hotbar && Inventory)
+    {
+        Hotbar->RefreshHeldFromInventory(Inventory);
+    }
+
+    // Refresh UI if inventory screen is open
+    RefreshUIIfInventoryOpen();
+
+    UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] HoldItem: Holding %s (ItemId: %s)"), 
+        *ItemEntry.Def->DisplayName.ToString(), *ItemEntry.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
     return true;
 }
 
-void AFirstPersonCharacter::ReleaseHeldItem()
+void AFirstPersonCharacter::ReleaseHeldItem(bool bTryPutBack)
 {
-	if (HeldItemActor)
+	if (!HeldItemActor)
 	{
-		UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] ReleaseHeldItem: Releasing held item"));
+		return;
+	}
+	
+	if (bTryPutBack)
+	{
+		// Try to put the item back into inventory (or drop if full)
+		if (!PutHeldItemBack())
+		{
+			// If PutHeldItemBack failed, just destroy the actor
+			UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] ReleaseHeldItem: Failed to put item back, destroying"));
+			HeldItemActor->Destroy();
+			HeldItemActor = nullptr;
+			HeldItemEntry = FItemEntry();
+		}
+	}
+	else
+	{
+		// Just destroy the actor without trying to put it back (item was already removed from inventory)
+		UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] ReleaseHeldItem: Releasing held item (already removed from inventory)"));
 		HeldItemActor->Destroy();
 		HeldItemActor = nullptr;
+		HeldItemEntry = FItemEntry();
 	}
-	HeldItemEntry = FItemEntry();
+}
+
+bool AFirstPersonCharacter::PutHeldItemBack()
+{
+	if (!HeldItemActor || !HeldItemEntry.IsValid() || !Inventory)
+	{
+		return false;
+	}
+
+	// Get the item entry from the held actor (preserves metadata)
+	FItemEntry EntryToReturn = HeldItemActor->GetItemEntry();
+	if (!EntryToReturn.IsValid())
+	{
+		EntryToReturn = HeldItemEntry;
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("[FirstPersonCharacter] PutHeldItemBack: Returning %s (ItemId: %s)"), 
+		*GetNameSafe(EntryToReturn.Def), *EntryToReturn.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+
+	// Try to add back to inventory
+	if (Inventory->TryAdd(EntryToReturn))
+	{
+		// Successfully added back - destroy the pickup
+		UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] PutHeldItemBack: Successfully returned %s (ItemId: %s) to inventory"), 
+			*GetNameSafe(EntryToReturn.Def), *EntryToReturn.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+		HeldItemActor->Destroy();
+		HeldItemActor = nullptr;
+		HeldItemEntry = FItemEntry();
+		
+		// Don't refresh hotbar here - let SelectHotbarSlot handle it after selecting the new slot
+		// Refreshing here could change ActiveItemId before SelectSlot completes
+		
+		// Refresh UI
+		RefreshUIIfInventoryOpen();
+		return true;
+	}
+	else
+	{
+		// Inventory is full - drop the item
+		UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] PutHeldItemBack: Inventory full, dropping %s"), 
+			*GetNameSafe(EntryToReturn.Def));
+		
+		UWorld* World = GetWorld();
+		if (!World)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] PutHeldItemBack: World is null, cannot drop"));
+			return false;
+		}
+
+		FActorSpawnParameters Params;
+		Params.Owner = this;
+		Params.Instigator = this;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
+
+		// Use unified drop helper
+		AItemPickup* DroppedPickup = AItemPickup::DropItemToWorld(World, this, EntryToReturn, Params);
+		if (!DroppedPickup)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[FirstPersonCharacter] PutHeldItemBack: Failed to drop item, keeping it held"));
+			return false;
+		}
+
+		// Clear held item state
+		HeldItemActor->Destroy();
+		HeldItemActor = nullptr;
+		HeldItemEntry = FItemEntry();
+		
+		// Don't refresh hotbar here - let SelectHotbarSlot handle it after selecting the new slot
+		
+		// Refresh UI
+		RefreshUIIfInventoryOpen();
+		return true;
+	}
+}
+
+void AFirstPersonCharacter::RefreshUIIfInventoryOpen()
+{
+	if (AController* PC = GetController())
+	{
+		if (AFirstPersonPlayerController* FPPC = Cast<AFirstPersonPlayerController>(PC))
+		{
+			if (UInventoryScreenWidget* InventoryScreen = FPPC->GetInventoryScreen())
+			{
+				if (InventoryScreen->IsOpen())
+				{
+					InventoryScreen->RefreshInventoryView();
+				}
+			}
+		}
+	}
 }
 
 FItemEntry AFirstPersonCharacter::GetHeldItemEntry() const
@@ -336,7 +546,8 @@ void AFirstPersonCharacter::OnInventoryItemRemoved(const FGuid& RemovedItemId)
 	if (HeldItemEntry.ItemId == RemovedItemId)
 	{
 		UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] OnInventoryItemRemoved: Currently held item was removed; releasing visual"));
-		ReleaseHeldItem();
+		// Don't try to put it back - it was already removed from inventory
+		ReleaseHeldItem(false);
 	}
 	// Ensure hotbar active id remains valid if selection is on a type that still exists
 	if (Hotbar && Inventory)

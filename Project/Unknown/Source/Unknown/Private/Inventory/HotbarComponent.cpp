@@ -67,9 +67,12 @@ FGuid UHotbarComponent::PickFirstItemIdOfType(const UInventoryComponent* Invento
 	{
 		if (E.Def == Type)
 		{
+			UE_LOG(LogTemp, Verbose, TEXT("[HotbarComponent] PickFirstItemIdOfType: Found %s with ItemId %s"), 
+				*GetNameSafe(Type), *E.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
 			return E.ItemId;
 		}
 	}
+	UE_LOG(LogTemp, Verbose, TEXT("[HotbarComponent] PickFirstItemIdOfType: No items of type %s found"), *GetNameSafe(Type));
 	return FGuid();
 }
 
@@ -83,10 +86,60 @@ bool UHotbarComponent::SelectSlot(int32 Index, UInventoryComponent* Inventory)
 
 	FGuid NewId;
 	UItemDefinition* Type = Slots[Index].AssignedType;
+	UE_LOG(LogTemp, Display, TEXT("[HotbarComponent] SelectSlot(%d): AssignedType=%s"), Index, *GetNameSafe(Type));
+	
 	if (Type)
 	{
-		NewId = PickFirstItemIdOfType(Inventory, Type);
+		// First, check if the current ActiveItemId for this slot is still valid
+		FGuid CurrentId = Slots[Index].ActiveItemId;
+		UE_LOG(LogTemp, Verbose, TEXT("[HotbarComponent] SelectSlot(%d): Current ActiveItemId=%s"), Index, 
+			*CurrentId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+		
+		if (CurrentId.IsValid() && InventoryHasItemId(Inventory, CurrentId))
+		{
+			// Verify it's still the correct type
+			const TArray<FItemEntry>& Entries = Inventory->GetEntries();
+			for (const FItemEntry& E : Entries)
+			{
+				if (E.ItemId == CurrentId)
+				{
+					if (E.Def == Type)
+					{
+						// Current ID is still valid and correct type - keep it
+						UE_LOG(LogTemp, Verbose, TEXT("[HotbarComponent] SelectSlot(%d): Keeping existing ActiveItemId (correct type)"), Index);
+						NewId = CurrentId;
+						break;
+					}
+					else
+					{
+						UE_LOG(LogTemp, Warning, TEXT("[HotbarComponent] SelectSlot(%d): Current ActiveItemId exists but wrong type! Expected %s, got %s"), 
+							Index, *GetNameSafe(Type), *GetNameSafe(E.Def));
+					}
+				}
+			}
+		}
+		
+		// If we didn't find a valid existing ID, pick the first item of this type
+		if (!NewId.IsValid())
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("[HotbarComponent] SelectSlot(%d): Picking first item of type %s"), Index, *GetNameSafe(Type));
+			NewId = PickFirstItemIdOfType(Inventory, Type);
+			if (NewId.IsValid())
+			{
+				UE_LOG(LogTemp, Display, TEXT("[HotbarComponent] SelectSlot(%d): Picked ItemId=%s"), Index, 
+					*NewId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+			}
+			else
+			{
+				UE_LOG(LogTemp, Display, TEXT("[HotbarComponent] SelectSlot(%d): No items of type %s found in inventory"), Index, *GetNameSafe(Type));
+			}
+		}
 	}
+	else
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[HotbarComponent] SelectSlot(%d): No assigned type"), Index);
+	}
+	
 	Slots[Index].ActiveItemId = NewId;
 	ActiveItemId = NewId;
 

@@ -210,7 +210,7 @@ bool UEquipmentComponent::TryUnequipToInventory(EEquipmentSlot Slot, FText& OutE
 
 void UEquipmentComponent::DropToWorld(const FItemEntry& Entry) const
 {
-    if (!GetWorld())
+    if (!GetWorld() || !Entry.IsValid())
     {
         return;
     }
@@ -218,15 +218,28 @@ void UEquipmentComponent::DropToWorld(const FItemEntry& Entry) const
     FActorSpawnParameters Params;
     // Equipment drops due to inventory full should always materialize, nudging if needed
     Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
-    AItemPickup* Pickup = AItemPickup::SpawnDropped(GetWorld(), OwnerActor, Entry.Def, Params);
+    // Use unified drop helper to preserve metadata
+    AItemPickup* Pickup = AItemPickup::DropItemToWorld(GetWorld(), OwnerActor, Entry, Params);
     if (!Pickup)
     {
         // If for some reason spawning failed, attempt a best-effort always-spawn as a fallback
         const FTransform Fallback = AItemPickup::BuildDropTransform(OwnerActor, Entry.Def);
+        Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
         Pickup = GetWorld()->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), Fallback, Params);
         if (Pickup)
         {
-            Pickup->SetItemDef(Entry.Def);
+            // Set the full item entry to preserve metadata
+            Pickup->SetItemEntry(Entry);
+            // Configure physics for dropped items
+            if (UStaticMeshComponent* ItemMesh = Pickup->Mesh)
+            {
+                ItemMesh->SetSimulatePhysics(true);
+                ItemMesh->SetEnableGravity(true);
+                ItemMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+                ItemMesh->SetCollisionObjectType(ECC_WorldDynamic);
+                ItemMesh->SetCollisionResponseToAllChannels(ECR_Block);
+                ItemMesh->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Block);
+            }
         }
     }
 }
