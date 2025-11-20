@@ -12,6 +12,7 @@
 #include "Engine/EngineTypes.h"
 #include "UI/InteractHighlightWidget.h"
 #include "UI/HotbarWidget.h"
+#include "UI/DropProgressBarWidget.h"
 #include "UI/InventoryScreenWidget.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Inventory/InventoryComponent.h"
@@ -235,6 +236,20 @@ void AFirstPersonPlayerController::BeginPlay()
 		}
 	}
 
+	// Create and add the drop progress bar widget (full-screen overlay)
+	if (!DropProgressBarWidget)
+	{
+		DropProgressBarWidget = CreateWidget<UDropProgressBarWidget>(this, UDropProgressBarWidget::StaticClass());
+		if (DropProgressBarWidget)
+		{
+			DropProgressBarWidget->AddToViewport(1001); // higher Z-order than highlight widget
+			DropProgressBarWidget->SetAnchorsInViewport(FAnchors(0.f, 0.f, 1.f, 1.f));
+			DropProgressBarWidget->SetAlignmentInViewport(FVector2D(0.f, 0.f));
+			DropProgressBarWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
+			DropProgressBarWidget->SetVisible(false);
+		}
+	}
+
 	// Lock input to game only and hide cursor for FPS
 	FInputModeGameOnly Mode;
 	SetInputMode(Mode);
@@ -284,7 +299,10 @@ void AFirstPersonPlayerController::SetupInputComponent()
 		}
 		if (PickupAction)
 		{
-			EIC->BindAction(PickupAction, ETriggerEvent::Started, this, &AFirstPersonPlayerController::OnPickup);
+			EIC->BindAction(PickupAction, ETriggerEvent::Started, this, &AFirstPersonPlayerController::OnPickupPressed);
+			EIC->BindAction(PickupAction, ETriggerEvent::Triggered, this, &AFirstPersonPlayerController::OnPickupOngoing);
+			EIC->BindAction(PickupAction, ETriggerEvent::Canceled, this, &AFirstPersonPlayerController::OnPickupReleased);
+			EIC->BindAction(PickupAction, ETriggerEvent::Completed, this, &AFirstPersonPlayerController::OnPickupReleased);
 		}
 		if (SpawnCrowbarAction)
 		{
@@ -427,6 +445,118 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 	if (WasInputKeyJustPressed(EKeys::Tab) || WasInputKeyJustPressed(EKeys::I))
 	{
 		ToggleInventory();
+	}
+
+	// Update hold-to-drop/hold-to-pickup progress bar
+	if (bIsHoldingDrop && !bInstantActionExecuted && !bInventoryUIOpen)
+	{
+		AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn());
+		if (!C)
+		{
+			bIsHoldingDrop = false;
+			HoldDropTimer = 0.0f;
+			if (DropProgressBarWidget)
+			{
+				DropProgressBarWidget->SetVisible(false);
+			}
+			return;
+		}
+
+		// Trace to see what player is looking at
+		FVector CamLoc; FRotator CamRot;
+		GetPlayerViewPoint(CamLoc, CamRot);
+		const FVector Start = CamLoc;
+		const FVector End = Start + CamRot.Vector() * 300.f;
+		FHitResult Hit;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(ItemPickup), false);
+		Params.AddIgnoredActor(C);
+		
+		bool bLookingAtPickup = false;
+		AItemPickup* TargetPickup = nullptr;
+		if (GetWorld() && GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
+		{
+			TargetPickup = Cast<AItemPickup>(Hit.GetActor());
+			bLookingAtPickup = (TargetPickup != nullptr);
+		}
+
+		// Update timer
+		HoldDropTimer += DeltaTime;
+		
+		// Only show progress bar after tap threshold (0.25s) has passed
+		const float TapThreshold = 0.25f;
+		if (HoldDropTimer >= TapThreshold)
+		{
+			if (DropProgressBarWidget && !DropProgressBarWidget->GetIsVisible())
+			{
+				DropProgressBarWidget->SetVisible(true);
+			}
+			
+			// Calculate progress from tap threshold onwards (0.25s to 0.75s = 0.5s range)
+			const float EffectiveHoldTime = HoldDropTimer - TapThreshold;
+			const float EffectiveHoldDuration = HoldDropDuration - TapThreshold;
+			const float Progress = FMath::Clamp(EffectiveHoldTime / EffectiveHoldDuration, 0.0f, 1.0f);
+			
+			if (DropProgressBarWidget)
+			{
+				DropProgressBarWidget->SetProgress(Progress);
+			}
+		}
+
+		// Check if we've held long enough (total time including tap threshold)
+		if (HoldDropTimer >= HoldDropDuration)
+		{
+			if (bLookingAtPickup && TargetPickup)
+			{
+				// Hold the pickup item
+				FItemEntry PickupEntry = TargetPickup->GetItemEntry();
+				if (PickupEntry.IsValid())
+				{
+					// Generate a new GUID if the pickup has an invalid one (all zeros)
+					if (!PickupEntry.ItemId.IsValid())
+					{
+						PickupEntry.ItemId = FGuid::NewGuid();
+					}
+					
+					// If already holding an item, store it first
+					if (C->IsHoldingItem())
+					{
+						C->PutHeldItemBack();
+					}
+					
+					// Add to inventory first, then hold it
+					UInventoryComponent* Inv = C->GetInventory();
+					if (Inv && Inv->TryAdd(PickupEntry))
+					{
+						// Now hold it from inventory
+						if (C->HoldItem(PickupEntry))
+						{
+							UE_LOG(LogTemp, Display, TEXT("[Pickup] Holding %s after progress"), *GetNameSafe(PickupEntry.Def));
+							TargetPickup->Destroy();
+							bInstantActionExecuted = true;
+						}
+						else
+						{
+							// Failed to hold, remove from inventory
+							Inv->RemoveById(PickupEntry.ItemId);
+						}
+					}
+				}
+			}
+			else if (C->IsHoldingItem())
+			{
+				// Drop held item at location
+				C->DropHeldItemAtLocation();
+				bInstantActionExecuted = true;
+			}
+			
+			// Reset state
+			bIsHoldingDrop = false;
+			HoldDropTimer = 0.0f;
+			if (DropProgressBarWidget)
+			{
+				DropProgressBarWidget->SetVisible(false);
+			}
+		}
 	}
 
 	// Update hold target for physics interaction so held object follows view
@@ -751,66 +881,143 @@ void AFirstPersonPlayerController::ToggleInventory()
 	}
 }
 
-void AFirstPersonPlayerController::OnPickup(const FInputActionValue& Value)
+void AFirstPersonPlayerController::OnPickupPressed(const FInputActionValue& Value)
 {
 	if (bInventoryUIOpen)
 	{
 		return;
 	}
+
 	AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn());
 	if (!C)
 	{
 		return;
 	}
-	UInventoryComponent* Inv = C->GetInventory();
-	if (!Inv)
+
+	// Reset state
+	bInstantActionExecuted = false;
+	bIsHoldingDrop = false;
+	HoldDropTimer = 0.0f;
+
+	// Start hold timer - will check what we're looking at in PlayerTick
+	// If looking at pickup: hold it after progress bar fills
+	// If looking at empty space and holding item: drop it after progress bar fills
+	// Progress bar won't show until after tap threshold (0.25s) to avoid flicker on taps
+	bIsHoldingDrop = true;
+	// Don't show progress bar yet - wait for tap threshold to pass
+}
+
+void AFirstPersonPlayerController::OnPickupOngoing(const FInputActionValue& Value)
+{
+	// This is called every frame while R is held
+	// Actual timer update happens in PlayerTick
+}
+
+void AFirstPersonPlayerController::OnPickupReleased(const FInputActionValue& Value)
+{
+	if (bInstantActionExecuted)
 	{
+		// Reset flag for next press
+		bInstantActionExecuted = false;
 		return;
 	}
-	// Trace for an item pickup in front of the camera
-	FVector CamLoc; FRotator CamRot;
-	GetPlayerViewPoint(CamLoc, CamRot);
-	const FVector Start = CamLoc;
-	const FVector End = Start + CamRot.Vector() * 300.f;
-	FHitResult Hit;
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(ItemPickup), false);
-	Params.AddIgnoredActor(C);
-	bool bHitAnything = false;
-	if (GetWorld() && GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
+
+	AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn());
+	if (!C || bInventoryUIOpen)
 	{
-		bHitAnything = true;
-		if (AItemPickup* Pickup = Cast<AItemPickup>(Hit.GetActor()))
+		// Cancel hold if no character or inventory open
+		if (bIsHoldingDrop)
 		{
-			UItemDefinition* Def = Pickup->GetItemDef();
-			if (Def)
+			bIsHoldingDrop = false;
+			HoldDropTimer = 0.0f;
+			if (DropProgressBarWidget)
 			{
-				FItemEntry Entry; Entry.Def = Def; Entry.ItemId = FGuid::NewGuid();
-				if (Inv->TryAdd(Entry))
-				{
-					UE_LOG(LogTemp, Display, TEXT("[Pickup] Added %s to inventory"), *Def->GetName());
-					Pickup->Destroy();
-					// If inventory UI is open, refresh it so the new item appears immediately
-					if (bInventoryUIOpen && InventoryScreen)
-					{
-					  InventoryScreen->RefreshInventoryView();
-					}
-				}
-				else
-				{
-					UE_LOG(LogTemp, Display, TEXT("[Pickup] Inventory full or invalid item; could not add %s"), *Def->GetName());
-				}
+				DropProgressBarWidget->SetVisible(false);
 			}
 		}
+		return;
 	}
-	// If we did not hit any interactable and the character is holding an item, release it
-	if (!bHitAnything)
+
+	// Check if this was a tap (very short press) vs a hold
+	const float TapThreshold = 0.25f; // Consider it a tap if released within 0.25 seconds
+	const bool bWasTap = (HoldDropTimer < TapThreshold);
+
+	if (bIsHoldingDrop)
 	{
-		if (C->IsHoldingItem())
+		if (bWasTap)
 		{
-			UE_LOG(LogTemp, Display, TEXT("[Pickup] No interactable under crosshair; releasing held item on R"));
-			C->ReleaseHeldItem();
+			// This was a tap - execute tap behavior
+			// Hide progress bar first
+			if (DropProgressBarWidget)
+			{
+				DropProgressBarWidget->SetVisible(false);
+			}
+
+			// Trace to see what player is looking at
+			FVector CamLoc; FRotator CamRot;
+			GetPlayerViewPoint(CamLoc, CamRot);
+			const FVector Start = CamLoc;
+			const FVector End = Start + CamRot.Vector() * 300.f;
+			FHitResult Hit;
+			FCollisionQueryParams Params(SCENE_QUERY_STAT(ItemPickup), false);
+			Params.AddIgnoredActor(C);
+			
+			if (GetWorld() && GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
+			{
+				if (AItemPickup* Pickup = Cast<AItemPickup>(Hit.GetActor()))
+				{
+					// Tap on pickup: add to inventory
+					UItemDefinition* Def = Pickup->GetItemDef();
+					if (Def)
+					{
+						UInventoryComponent* Inv = C->GetInventory();
+						if (Inv)
+						{
+							FItemEntry Entry; Entry.Def = Def; Entry.ItemId = FGuid::NewGuid();
+							if (Inv->TryAdd(Entry))
+							{
+								UE_LOG(LogTemp, Display, TEXT("[Pickup] Added %s to inventory"), *Def->GetName());
+								Pickup->Destroy();
+								if (bInventoryUIOpen && InventoryScreen)
+								{
+									InventoryScreen->RefreshInventoryView();
+								}
+							}
+							else
+							{
+								UE_LOG(LogTemp, Display, TEXT("[Pickup] Inventory full or invalid item; could not add %s"), *Def->GetName());
+							}
+						}
+					}
+				}
+			}
+			else if (C->IsHoldingItem())
+			{
+				// Tap while holding item and not looking at anything: put item back in inventory
+				C->PutHeldItemBack();
+			}
+		}
+		else
+		{
+			// This was a hold that was canceled (released before timer completed)
+			// Just cancel, don't do anything
+		}
+
+		// Reset state
+		bIsHoldingDrop = false;
+		HoldDropTimer = 0.0f;
+		if (DropProgressBarWidget)
+		{
+			DropProgressBarWidget->SetVisible(false);
 		}
 	}
+}
+
+// Legacy handler - kept for compatibility but should not be called
+void AFirstPersonPlayerController::OnPickup(const FInputActionValue& Value)
+{
+	// This should not be called anymore, but redirect to pressed handler for safety
+	OnPickupPressed(Value);
 }
 
 void AFirstPersonPlayerController::OnSpawnItem(const FInputActionValue& Value)

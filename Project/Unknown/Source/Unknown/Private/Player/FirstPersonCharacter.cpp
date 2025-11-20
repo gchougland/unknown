@@ -515,6 +515,131 @@ bool AFirstPersonCharacter::PutHeldItemBack()
 	}
 }
 
+void AFirstPersonCharacter::DropHeldItemAtLocation()
+{
+	if (!HeldItemActor || !HeldItemEntry.IsValid() || !HeldItemEntry.Def)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] DropHeldItemAtLocation: No held item to drop"));
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] DropHeldItemAtLocation: World is null"));
+		return;
+	}
+
+	// Store entry before clearing state
+	FItemEntry EntryToDrop = HeldItemActor->GetItemEntry();
+	if (!EntryToDrop.IsValid())
+	{
+		EntryToDrop = HeldItemEntry;
+	}
+
+	// Get camera view point
+	FVector CamLoc;
+	FRotator CamRot;
+	if (AController* PC = GetController())
+	{
+		PC->GetPlayerViewPoint(CamLoc, CamRot);
+	}
+	else
+	{
+		CamLoc = GetActorLocation();
+		CamRot = GetActorRotation();
+	}
+
+	const FVector Forward = CamRot.Vector();
+	const float MaxTraceDistance = 600.f;
+	const FVector TraceEnd = CamLoc + Forward * MaxTraceDistance;
+
+	// Perform trace to find drop location
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ItemDrop), false);
+	Params.AddIgnoredActor(this);
+	if (HeldItemActor)
+	{
+		Params.AddIgnoredActor(HeldItemActor);
+	}
+
+	FVector DropLocation;
+	FRotator DropRotation = FRotator(0.f, CamRot.Yaw, 0.f);
+	bool bHit = false;
+
+	if (World->LineTraceSingleByChannel(Hit, CamLoc, TraceEnd, ECC_Visibility, Params))
+	{
+		bHit = true;
+		const float HitDistance = (Hit.ImpactPoint - CamLoc).Size();
+		
+		// If hit is far away, offset back to prevent clipping
+		if (HitDistance > 400.f)
+		{
+			const float OffsetDistance = 30.f; // ~1 foot in cm
+			DropLocation = Hit.ImpactPoint - Forward * OffsetDistance;
+		}
+		else
+		{
+			DropLocation = Hit.ImpactPoint;
+		}
+	}
+	else
+	{
+		// No hit - drop at max distance
+		DropLocation = TraceEnd;
+	}
+
+	// Create base transform at drop location
+	const FTransform BaseTransform(DropRotation, DropLocation, FVector(1.f, 1.f, 1.f));
+	
+	// Apply DefaultDropTransform on top
+	const FTransform FinalTransform = HeldItemEntry.Def->DefaultDropTransform * BaseTransform;
+
+	// Spawn the pickup
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = this;
+	SpawnParams.Instigator = this;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
+
+	AItemPickup* DroppedPickup = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), FinalTransform, SpawnParams);
+	if (DroppedPickup)
+	{
+		// Set the full item entry (includes metadata)
+		DroppedPickup->SetItemEntry(EntryToDrop);
+
+		// Configure physics for dropped items: gravity ON, interactable channel BLOCK
+		if (UStaticMeshComponent* ItemMesh = DroppedPickup->Mesh)
+		{
+			ItemMesh->SetSimulatePhysics(true);
+			ItemMesh->SetEnableGravity(true);
+			ItemMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			ItemMesh->SetCollisionObjectType(ECC_WorldDynamic);
+			ItemMesh->SetCollisionResponseToAllChannels(ECR_Block);
+			ItemMesh->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Block);
+		}
+
+		UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] DropHeldItemAtLocation: Dropped %s at %s"), 
+			*GetNameSafe(EntryToDrop.Def), *FinalTransform.GetLocation().ToString());
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[FirstPersonCharacter] DropHeldItemAtLocation: Failed to spawn pickup"));
+		return;
+	}
+
+	// Clear held item state BEFORE destroying actor
+	// Store the entry temporarily since we need it for the check below
+	FItemEntry DroppedEntry = EntryToDrop;
+	HeldItemEntry = FItemEntry();
+	HeldItemActor->Destroy();
+	HeldItemActor = nullptr;
+
+	// IMPORTANT: The item was already removed from inventory when we held it,
+	// so we should NOT try to put it back. The drop is complete.
+	// Refresh UI
+	RefreshUIIfInventoryOpen();
+}
+
 void AFirstPersonCharacter::RefreshUIIfInventoryOpen()
 {
 	if (AController* PC = GetController())

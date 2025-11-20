@@ -67,6 +67,9 @@ protected:
 	void OnThrow(const struct FInputActionValue& Value);
 	void OnFlashlightToggle(const struct FInputActionValue& Value);
 	void OnPickup(const struct FInputActionValue& Value);
+	void OnPickupPressed(const struct FInputActionValue& Value);
+	void OnPickupOngoing(const struct FInputActionValue& Value);
+	void OnPickupReleased(const struct FInputActionValue& Value);
 	void OnSpawnItem(const struct FInputActionValue& Value);
 
 	// Ensure mapping context and actions exist and have keys mapped
@@ -122,6 +125,16 @@ protected:
     UPROPERTY()
     TObjectPtr<class UInventoryScreenWidget> InventoryScreen;
 
+    // UI: progress bar for hold-to-drop
+    UPROPERTY()
+    TObjectPtr<class UDropProgressBarWidget> DropProgressBarWidget;
+
     // Cached UI-open state used to quickly gate inputs without dereferencing widgets
     bool bInventoryUIOpen = false;
+
+    // Hold-to-drop state
+    float HoldDropTimer = 0.0f;
+    static constexpr float HoldDropDuration = 0.75f;
+    bool bIsHoldingDrop = false;
+    bool bInstantActionExecuted = false;
 };

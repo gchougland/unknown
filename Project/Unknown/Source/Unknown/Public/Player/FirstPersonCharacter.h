@@ -119,6 +119,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Inventory")
 	bool PutHeldItemBack();
 
+	// Drop the currently held item at the location where the player is looking
+	UFUNCTION(BlueprintCallable, Category="Inventory")
+	void DropHeldItemAtLocation();
+
 	// Check if an item is currently being held
 	UFUNCTION(BlueprintPure, Category="Inventory")
 	bool IsHoldingItem() const { return HeldItemActor != nullptr; }
