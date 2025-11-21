@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Engine/EngineTypes.h" // FActorSpawnParameters
+#include "Interfaces/IAttackable.h"
 
 // Forward declarations
 class UStaticMeshComponent;
@@ -14,7 +15,7 @@ struct FItemEntry;
 
 /** Simple world pickup actor that carries a single item definition */
 UCLASS()
-class UNKNOWN_API AItemPickup : public AActor
+class UNKNOWN_API AItemPickup : public AActor, public IAttackable
 {
     GENERATED_BODY()
 public:
@@ -45,6 +46,10 @@ public:
     
     UFUNCTION(BlueprintPure, Category="Pickup")
     FItemEntry GetItemEntry() const;
+
+    // IAttackable implementation
+public:
+	virtual void OnAttacked_Implementation(ACharacter* Attacker, UItemDefinition* Weapon, const FVector& HitLocation, const FVector& HitDirection) override;
 
     // Unified drop helpers
 public:

@@ -25,7 +25,9 @@
 #include "Inventory/ItemDefinition.h"
 #include "Inventory/ItemPickup.h"
 #include "Inventory/ItemUseAction.h"
+#include "Inventory/ItemAttackAction.h"
 #include "Inventory/StorageSerialization.h"
+#include "Interfaces/IAttackable.h"
 #include "UI/MessageLogSubsystem.h"
 
 AFirstPersonPlayerController::AFirstPersonPlayerController(const FObjectInitializer& ObjectInitializer)
@@ -1116,6 +1118,20 @@ void AFirstPersonPlayerController::OnThrow(const FInputActionValue& Value)
 		return;
 	}
 
+	// PRIORITY 1: Check if physics object is being held - if yes, throw it and return early
+	if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
+	{
+		if (PIC->IsHolding())
+		{
+			const FVector Dir = GetControlRotation().Vector();
+			PIC->Throw(Dir);
+			// Clear rotate state on throw to restore camera look immediately
+			bRotateHeld = false;
+			PIC->SetRotateHeld(false);
+			return; // Early return - physics throw takes priority
+		}
+	}
+
 	// Check if Shift is held and player is holding an item - if so, try to store in container
 	const bool bShiftHeld = IsInputKeyDown(EKeys::LeftShift);
 	const bool bHoldingItem = C->IsHoldingItem();
@@ -1188,18 +1204,113 @@ void AFirstPersonPlayerController::OnThrow(const FInputActionValue& Value)
 				}
 			}
 		}
-		// If we get here, Shift was held but no valid storage was found - fall through to throw behavior
+		// If we get here, Shift was held but no valid storage was found - fall through to attack/throw behavior
 	}
 
-	// Normal throw behavior (either Shift not held, or no storage found)
-	if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
+	// PRIORITY 2: Check if holding an item with attack action
+	if (bHoldingItem)
 	{
-		const FVector Dir = GetControlRotation().Vector();
-		PIC->Throw(Dir);
-		// Clear rotate state on throw to restore camera look immediately
-		bRotateHeld = false;
-		PIC->SetRotateHeld(false);
+		FItemEntry HeldEntry = C->GetHeldItemEntry();
+		if (HeldEntry.IsValid() && HeldEntry.Def && HeldEntry.Def->DefaultAttackAction)
+		{
+			// Get or create attack action instance (cached to maintain cooldown state)
+			UItemAttackAction* AttackAction = CachedAttackAction;
+			
+			// Check if we need to create a new instance or if the cached one is for a different item
+			if (!AttackAction || !AttackAction->GetClass()->IsChildOf(HeldEntry.Def->DefaultAttackAction))
+			{
+				AttackAction = NewObject<UItemAttackAction>(this, HeldEntry.Def->DefaultAttackAction);
+				CachedAttackAction = AttackAction;
+			}
+
+			if (AttackAction)
+			{
+				// Check if attack is on cooldown
+				if (AttackAction->IsOnCooldown())
+				{
+					UE_LOG(LogTemp, Verbose, TEXT("[Attack] Attack action is on cooldown, ignoring input"));
+					return; // Attack on cooldown, do nothing
+				}
+
+				// Perform line trace to find attackable targets
+				FVector CamLoc; FRotator CamRot;
+				GetPlayerViewPoint(CamLoc, CamRot);
+				const FVector Dir = CamRot.Vector();
+				const float AttackRange = AttackAction->GetAttackRange();
+				const FVector Start = CamLoc;
+				const FVector End = Start + Dir * AttackRange;
+
+				FHitResult Hit;
+				FCollisionQueryParams Params(SCENE_QUERY_STAT(ItemAttack), false);
+				Params.AddIgnoredActor(C);
+				// Ignore held item actor
+				if (AItemPickup* HeldActor = C->GetHeldItemActor())
+				{
+					Params.AddIgnoredActor(HeldActor);
+				}
+
+				AActor* HitActor = nullptr;
+				FVector HitLocation = FVector::ZeroVector;
+				FVector HitDirection = Dir;
+
+				// Try to find an attackable target
+				if (GetWorld() && GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
+				{
+					HitActor = Hit.GetActor();
+					if (HitActor)
+					{
+						// Check if hit actor implements IAttackable
+						IAttackable* AttackableTarget = Cast<IAttackable>(HitActor);
+						if (AttackableTarget)
+						{
+							// Calculate hit location and direction
+							HitLocation = Hit.ImpactPoint;
+							HitDirection = (HitLocation - Start).GetSafeNormal();
+						}
+						else
+						{
+							// Hit something but it's not attackable
+							HitActor = nullptr;
+							UE_LOG(LogTemp, Verbose, TEXT("[Attack] Hit actor %s does not implement IAttackable"), *GetNameSafe(HitActor));
+						}
+					}
+				}
+				else
+				{
+					UE_LOG(LogTemp, Verbose, TEXT("[Attack] No target found in range"));
+				}
+
+				// Execute attack action (will animate swing even if no target)
+				// Use forward direction and camera location as fallback if no hit
+				if (HitLocation.IsNearlyZero())
+				{
+					HitLocation = Start + Dir * (AttackRange * 0.5f); // Midpoint of attack range
+					HitDirection = Dir;
+				}
+
+				if (AttackAction->ExecuteAttack(C, HeldEntry, HitActor, HitLocation, HitDirection))
+				{
+					if (HitActor)
+					{
+						UE_LOG(LogTemp, Display, TEXT("[Attack] Successfully attacked %s with %s"), 
+							*GetNameSafe(HitActor), *GetNameSafe(HeldEntry.Def));
+					}
+					else
+					{
+						UE_LOG(LogTemp, Verbose, TEXT("[Attack] Attack swing executed (no target hit)"));
+					}
+					return; // Attack executed (with or without target), don't fall through to throw
+				}
+				else
+				{
+					UE_LOG(LogTemp, Verbose, TEXT("[Attack] Attack action failed for %s"), *GetNameSafe(HeldEntry.Def));
+				}
+			}
+		}
 	}
+
+	// FALLBACK: If no physics object and no attack action, do nothing
+	// (Original throw behavior for physics objects is already handled above)
 }
 
 void AFirstPersonPlayerController::OnFlashlightToggle(const FInputActionValue& Value)

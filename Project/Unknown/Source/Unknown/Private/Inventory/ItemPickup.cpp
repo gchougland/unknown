@@ -4,6 +4,8 @@
 #include "Inventory/ItemDefinition.h"
 #include "Inventory/ItemTypes.h"
 #include "Inventory/FoodItemData.h"
+#include "Interfaces/IAttackable.h"
+#include "GameFramework/Character.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
@@ -278,4 +280,34 @@ AItemPickup* AItemPickup::DropItemToWorld(UWorld* World, const AActor* ContextAc
     }
     
     return Pickup;
+}
+
+void AItemPickup::OnAttacked_Implementation(ACharacter* Attacker, UItemDefinition* Weapon, const FVector& HitLocation, const FVector& HitDirection)
+{
+	if (!Mesh || !Mesh->IsSimulatingPhysics())
+	{
+		// If physics isn't enabled, enable it so the pickup can be knocked around
+		Mesh->SetSimulatePhysics(true);
+		Mesh->SetEnableGravity(true);
+	}
+
+	// Apply impulse to the mesh component at the hit location
+	// Use the hit direction normalized and scale by a reasonable force magnitude
+	const float ForceMagnitude = 1000.0f; // Configurable if needed
+	FVector ForceVector = HitDirection.GetSafeNormal() * ForceMagnitude;
+	
+	// Apply impulse at the hit location (or center of mass if hit location is invalid)
+	if (HitLocation.IsNearlyZero())
+	{
+		// If no valid hit location, apply at center of mass
+		Mesh->AddImpulse(ForceVector, NAME_None, true);
+	}
+	else
+	{
+		// Apply impulse at the hit location for more realistic physics response
+		Mesh->AddImpulseAtLocation(ForceVector, HitLocation);
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("[ItemPickup] %s was attacked by %s, applying force %s"), 
+		*GetName(), Attacker ? *Attacker->GetName() : TEXT("Unknown"), *ForceVector.ToString());
 }

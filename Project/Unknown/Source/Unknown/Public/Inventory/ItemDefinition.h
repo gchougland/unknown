@@ -7,6 +7,7 @@
 
 class UTexture2D;
 class UItemUseAction;
+class UItemAttackAction;
 class UStaticMesh;
 class UBlueprint;
 class UItemEquipEffect;
@@ -66,8 +67,12 @@ public:
  FGameplayTagContainer Tags;
 
 	// Optional default use action class
- UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
- TSubclassOf<UItemUseAction> DefaultUseAction;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
+	TSubclassOf<UItemUseAction> DefaultUseAction;
+
+	// Optional default attack action class
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
+	TSubclassOf<UItemAttackAction> DefaultAttackAction;
 
 	// Default relative transform for how the item should appear when held in-hand (applied relative to HoldPoint or socket)
  UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Transforms")

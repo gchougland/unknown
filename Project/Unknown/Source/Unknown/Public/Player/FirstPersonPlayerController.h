@@ -11,6 +11,7 @@ class UInventoryScreenWidget;
 class UStorageWindowWidget;
 class UStatBarWidget;
 class UItemDefinition;
+class UItemAttackAction;
 class UInteractInfoWidget;
 
 #include "FirstPersonPlayerController.generated.h"
@@ -171,4 +172,8 @@ protected:
     float HoldUseTimer = 0.0f;
     bool bIsHoldingUse = false;
     bool bInstantUseExecuted = false;
+
+    // Cached attack action instance (kept alive to maintain cooldown state)
+    UPROPERTY()
+    TObjectPtr<class UItemAttackAction> CachedAttackAction;
 };
