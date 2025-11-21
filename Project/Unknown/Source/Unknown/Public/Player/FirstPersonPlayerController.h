@@ -176,4 +176,10 @@ protected:
     // Cached attack action instance (kept alive to maintain cooldown state)
     UPROPERTY()
     TObjectPtr<class UItemAttackAction> CachedAttackAction;
+
+	// Friend declarations for helper structs (implementation details)
+	friend struct FPlayerControllerInputSetup;
+	friend struct FPlayerControllerUIManager;
+	friend struct FPlayerControllerInteractionHandler;
+	friend struct FPlayerControllerTickHandler;
 };
