@@ -1249,14 +1249,9 @@ void AFirstPersonPlayerController::OnThrow(const FInputActionValue& Value)
 					Params.AddIgnoredActor(HeldActor);
 				}
 
-				AActor* HitActor = nullptr;
-				FVector HitLocation = FVector::ZeroVector;
-				FVector HitDirection = Dir;
-
-				// Try to find an attackable target
 				if (GetWorld() && GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
 				{
-					HitActor = Hit.GetActor();
+					AActor* HitActor = Hit.GetActor();
 					if (HitActor)
 					{
 						// Check if hit actor implements IAttackable
@@ -1264,46 +1259,30 @@ void AFirstPersonPlayerController::OnThrow(const FInputActionValue& Value)
 						if (AttackableTarget)
 						{
 							// Calculate hit location and direction
-							HitLocation = Hit.ImpactPoint;
-							HitDirection = (HitLocation - Start).GetSafeNormal();
+							const FVector HitLocation = Hit.ImpactPoint;
+							const FVector HitDirection = (HitLocation - Start).GetSafeNormal();
+
+							// Execute attack action
+							if (AttackAction->ExecuteAttack(C, HeldEntry, HitActor, HitLocation, HitDirection))
+							{
+								UE_LOG(LogTemp, Display, TEXT("[Attack] Successfully attacked %s with %s"), 
+									*GetNameSafe(HitActor), *GetNameSafe(HeldEntry.Def));
+								return; // Attack successful, don't fall through to throw
+							}
+							else
+							{
+								UE_LOG(LogTemp, Verbose, TEXT("[Attack] Attack action failed for %s"), *GetNameSafe(HeldEntry.Def));
+							}
 						}
 						else
 						{
-							// Hit something but it's not attackable
-							HitActor = nullptr;
 							UE_LOG(LogTemp, Verbose, TEXT("[Attack] Hit actor %s does not implement IAttackable"), *GetNameSafe(HitActor));
 						}
 					}
 				}
 				else
 				{
-					UE_LOG(LogTemp, Verbose, TEXT("[Attack] No target found in range"));
-				}
-
-				// Execute attack action (will animate swing even if no target)
-				// Use forward direction and camera location as fallback if no hit
-				if (HitLocation.IsNearlyZero())
-				{
-					HitLocation = Start + Dir * (AttackRange * 0.5f); // Midpoint of attack range
-					HitDirection = Dir;
-				}
-
-				if (AttackAction->ExecuteAttack(C, HeldEntry, HitActor, HitLocation, HitDirection))
-				{
-					if (HitActor)
-					{
-						UE_LOG(LogTemp, Display, TEXT("[Attack] Successfully attacked %s with %s"), 
-							*GetNameSafe(HitActor), *GetNameSafe(HeldEntry.Def));
-					}
-					else
-					{
-						UE_LOG(LogTemp, Verbose, TEXT("[Attack] Attack swing executed (no target hit)"));
-					}
-					return; // Attack executed (with or without target), don't fall through to throw
-				}
-				else
-				{
-					UE_LOG(LogTemp, Verbose, TEXT("[Attack] Attack action failed for %s"), *GetNameSafe(HeldEntry.Def));
+					UE_LOG(LogTemp, Verbose, TEXT("[Attack] No attackable target found in range"));
 				}
 			}
 		}

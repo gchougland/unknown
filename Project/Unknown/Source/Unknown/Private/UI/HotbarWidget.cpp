@@ -201,6 +201,9 @@ void UHotbarWidget::UpdateSlotIcon(int32 Index)
         ItemIconHelper::ApplyIconToImage(Icon, Tex, SlotSize);
         // Ensure brush tint alpha is 1 for non-empty
         Icon->SetBrushTintColor(FLinearColor(1.f, 1.f, 1.f, 1.f));
+        // Ensure icon is visible when we have a texture
+        Icon->SetVisibility(ESlateVisibility::Visible);
+        Icon->SetOpacity(1.f);
     }
     else
     {
@@ -347,8 +350,14 @@ void UHotbarWidget::OnSlotAssigned(int32 Index, UItemDefinition* ItemType)
 		AssignedTypes.SetNum(FMath::Max(Index + 1, AssignedTypes.Num()));
 	}
 	AssignedTypes[Index] = ItemType;
-	// Update visuals for this slot
+	
+	// Update visuals for this slot immediately
 	RefreshSlotVisual(Index);
+	// Also refresh all slots to ensure quantities and other state are up to date
+	// This is important when items are auto-assigned during pickup
+	RefreshAll();
+	// Force immediate layout update to ensure the visual change is rendered
+	InvalidateLayoutAndVolatility();
 }
 
 void UHotbarWidget::OnActiveChanged(int32 NewIndex, FGuid ItemId)
