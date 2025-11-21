@@ -114,19 +114,19 @@ protected:
 	TObjectPtr<class UInputAction> CrouchAction;
 	UPROPERTY()
 	TObjectPtr<class UInputAction> SprintAction;
- // Interaction actions
- UPROPERTY()
- TObjectPtr<class UInputAction> InteractAction;
- UPROPERTY()
- TObjectPtr<class UInputAction> RotateHeldAction;
- UPROPERTY()
- TObjectPtr<class UInputAction> ThrowAction;
- UPROPERTY()
- TObjectPtr<class UInputAction> FlashlightAction;
- UPROPERTY()
- TObjectPtr<class UInputAction> PickupAction;
- UPROPERTY()
- TObjectPtr<class UInputAction> SpawnCrowbarAction;
+	// Interaction actions
+	UPROPERTY()
+	TObjectPtr<class UInputAction> InteractAction;
+	UPROPERTY()
+	TObjectPtr<class UInputAction> RotateHeldAction;
+	UPROPERTY()
+	TObjectPtr<class UInputAction> ThrowAction;
+	UPROPERTY()
+	TObjectPtr<class UInputAction> FlashlightAction;
+	UPROPERTY()
+	TObjectPtr<class UInputAction> PickupAction;
+	UPROPERTY()
+	TObjectPtr<class UInputAction> SpawnCrowbarAction;
 
 	// Internal state: whether RMB is currently held for rotating a held object
 	bool bRotateHeld = false;
