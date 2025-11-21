@@ -9,6 +9,8 @@
 #include "Inventory/ItemPickup.h"
 #include "Inventory/ItemTypes.h"
 #include "Inventory/ItemDefinition.h"
+#include "Inventory/StorageComponent.h"
+#include "Inventory/StorageSerialization.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/SceneComponent.h"
@@ -287,20 +289,27 @@ bool AFirstPersonCharacter::HoldItem(const FItemEntry& ItemEntry)
         return false;
     }
 
+    // Check if item can be held
+    if (!ItemEntry.Def->bCanBeHeld)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] HoldItem: Item %s cannot be held (bCanBeHeld is false)"), *GetNameSafe(ItemEntry.Def));
+        return false;
+    }
+
     if (!Inventory)
     {
         UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] HoldItem: Inventory is null"));
         return false;
     }
 
-    // Remove item from inventory BEFORE spawning pickup
-    UE_LOG(LogTemp, Verbose, TEXT("[FirstPersonCharacter] HoldItem: Removing ItemId %s from inventory"), 
+    // Remove item from inventory BEFORE spawning pickup (only if it's actually in inventory)
+    // Items that cannot be stored may be held directly from the ground without being in inventory
+    UE_LOG(LogTemp, Verbose, TEXT("[FirstPersonCharacter] HoldItem: Attempting to remove ItemId %s from inventory"), 
         *ItemEntry.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
-    if (!Inventory->RemoveById(ItemEntry.ItemId))
+    bool bWasInInventory = Inventory->RemoveById(ItemEntry.ItemId);
+    if (!bWasInInventory)
     {
-        UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] HoldItem: Failed to remove item from inventory (ItemId: %s)"), 
-            *ItemEntry.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
-        return false;
+        UE_LOG(LogTemp, Verbose, TEXT("[FirstPersonCharacter] HoldItem: Item not in inventory (likely held directly from ground), continuing"));
     }
 
     UWorld* World = GetWorld();
@@ -344,7 +353,29 @@ bool AFirstPersonCharacter::HoldItem(const FItemEntry& ItemEntry)
         SpawnTransform.SetLocation(GetActorLocation() + GetActorForwardVector() * 50.f);
     }
 
-    HeldItemActor = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), SpawnTransform, SpawnParams);
+    // Check for PickupActorClass override
+    TSubclassOf<AActor> ActorClass = AItemPickup::StaticClass();
+    if (ItemEntry.Def && ItemEntry.Def->PickupActorClass)
+    {
+        ActorClass = ItemEntry.Def->PickupActorClass;
+        // Ensure it's a subclass of AItemPickup
+        if (!ActorClass->IsChildOf(AItemPickup::StaticClass()))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] HoldItem: PickupActorClass %s is not a subclass of AItemPickup, using default"), *ActorClass->GetName());
+            ActorClass = AItemPickup::StaticClass();
+        }
+    }
+
+    // Create a copy of ItemEntry - it should already have storage data if it came from inventory
+    // (storage data is saved when picking up from ground before adding to inventory)
+    FItemEntry EntryToHold = ItemEntry;
+    
+    // Check if EntryToHold already has storage data (from when it was picked up)
+    // If not, we can't save it here because the actor hasn't been spawned yet
+    // Storage data should be preserved when adding to inventory
+    bool bHasStorageData = EntryToHold.CustomData.Contains(TEXT("StorageData"));
+
+    HeldItemActor = World->SpawnActor<AItemPickup>(ActorClass, SpawnTransform, SpawnParams);
     if (!HeldItemActor)
     {
         UE_LOG(LogTemp, Error, TEXT("[FirstPersonCharacter] HoldItem: Failed to spawn AItemPickup"));
@@ -354,8 +385,26 @@ bool AFirstPersonCharacter::HoldItem(const FItemEntry& ItemEntry)
         return false;
     }
 
-    // Set the full item entry (includes metadata)
-    HeldItemActor->SetItemEntry(ItemEntry);
+    // Set the full item entry (includes metadata and storage data from inventory)
+    HeldItemActor->SetItemEntry(EntryToHold);
+    HeldItemEntry = EntryToHold;
+    
+    // If this is a storage container, restore its storage data from the entry
+    // (The entry should already have storage data saved when it was picked up)
+    if (UStorageComponent* StorageComp = HeldItemActor->FindComponentByClass<UStorageComponent>())
+    {
+        if (bHasStorageData)
+        {
+            // Restore from the entry (which has storage data from when it was picked up)
+            StorageSerialization::RestoreStorageFromItemEntry(EntryToHold, StorageComp);
+        }
+        else
+        {
+            // No storage data in entry - this shouldn't happen if the container was picked up correctly
+            // But handle gracefully by initializing empty storage
+            UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] HoldItem: Storage container has no storage data in entry"));
+        }
+    }
 
     // Configure physics for held item: gravity OFF, interactable channel IGNORE
     UStaticMeshComponent* ItemMesh = HeldItemActor->Mesh;
@@ -459,8 +508,43 @@ bool AFirstPersonCharacter::PutHeldItemBack()
 	UE_LOG(LogTemp, Verbose, TEXT("[FirstPersonCharacter] PutHeldItemBack: Returning %s (ItemId: %s)"), 
 		*GetNameSafe(EntryToReturn.Def), *EntryToReturn.ItemId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
 
-	// Try to add back to inventory
-	if (Inventory->TryAdd(EntryToReturn))
+	// If item cannot be stored, skip inventory and drop it directly
+	if (EntryToReturn.Def && !EntryToReturn.Def->bCanBeStored)
+	{
+		UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] PutHeldItemBack: Item %s cannot be stored, dropping it"), 
+			*GetNameSafe(EntryToReturn.Def));
+		
+		UWorld* World = GetWorld();
+		if (!World)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] PutHeldItemBack: World is null, cannot drop"));
+			return false;
+		}
+
+		FActorSpawnParameters Params;
+		Params.Owner = this;
+		Params.Instigator = this;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
+
+		// Use unified drop helper
+		AItemPickup* DroppedPickup = AItemPickup::DropItemToWorld(World, this, EntryToReturn, Params);
+		if (!DroppedPickup)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[FirstPersonCharacter] PutHeldItemBack: Failed to drop item, keeping it held"));
+			return false;
+		}
+
+		// Clear held item state
+		HeldItemActor->Destroy();
+		HeldItemActor = nullptr;
+		HeldItemEntry = FItemEntry();
+		
+		// Refresh UI
+		RefreshUIIfInventoryOpen();
+		return true;
+	}
+	// Try to add back to inventory (only if item can be stored)
+	else if (Inventory->TryAdd(EntryToReturn))
 	{
 		// Successfully added back - destroy the pickup
 		UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] PutHeldItemBack: Successfully returned %s (ItemId: %s) to inventory"), 
@@ -530,11 +614,13 @@ void AFirstPersonCharacter::DropHeldItemAtLocation()
 		return;
 	}
 
-	// Store entry before clearing state
-	FItemEntry EntryToDrop = HeldItemActor->GetItemEntry();
-	if (!EntryToDrop.IsValid())
+	// Use HeldItemEntry which should have storage data preserved
+	// (HeldItemActor->GetItemEntry() might not have storage data if the actor was just spawned)
+	FItemEntry EntryToDrop = HeldItemEntry;
+	if (!EntryToDrop.IsValid() && HeldItemActor)
 	{
-		EntryToDrop = HeldItemEntry;
+		// Fallback to actor's entry if HeldItemEntry is invalid
+		EntryToDrop = HeldItemActor->GetItemEntry();
 	}
 
 	// Get camera view point
@@ -595,17 +681,39 @@ void AFirstPersonCharacter::DropHeldItemAtLocation()
 	// Apply DefaultDropTransform on top
 	const FTransform FinalTransform = HeldItemEntry.Def->DefaultDropTransform * BaseTransform;
 
-	// Spawn the pickup
+	// Check for PickupActorClass override
+	TSubclassOf<AActor> ActorClass = AItemPickup::StaticClass();
+	if (HeldItemEntry.Def && HeldItemEntry.Def->PickupActorClass)
+	{
+		ActorClass = HeldItemEntry.Def->PickupActorClass;
+		// Ensure it's a subclass of AItemPickup
+		if (!ActorClass->IsChildOf(AItemPickup::StaticClass()))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] PickupActorClass %s is not a subclass of AItemPickup, using default"), *ActorClass->GetName());
+			ActorClass = AItemPickup::StaticClass();
+		}
+	}
+
+	// Spawn the pickup using deferred spawning to set up storage before collision check
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.Owner = this;
 	SpawnParams.Instigator = this;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
 
-	AItemPickup* DroppedPickup = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), FinalTransform, SpawnParams);
+	AItemPickup* DroppedPickup = World->SpawnActorDeferred<AItemPickup>(ActorClass, FinalTransform, this, this, ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding);
 	if (DroppedPickup)
 	{
-		// Set the full item entry (includes metadata)
+		// Set the full item entry (includes metadata) before finishing spawn
 		DroppedPickup->SetItemEntry(EntryToDrop);
+
+		// If this is a storage container, restore its storage data before finishing spawn
+		if (UStorageComponent* StorageComp = DroppedPickup->FindComponentByClass<UStorageComponent>())
+		{
+			StorageSerialization::RestoreStorageFromItemEntry(EntryToDrop, StorageComp);
+		}
+
+		// Finish spawning (this will perform collision check)
+		DroppedPickup->FinishSpawning(FinalTransform);
 
 		// Configure physics for dropped items: gravity ON, interactable channel BLOCK
 		if (UStaticMeshComponent* ItemMesh = DroppedPickup->Mesh)

@@ -44,7 +44,7 @@ namespace InventoryUIConstants
 
     // Column widths (inventory list)
     static constexpr float ColumnWidth_Icon = 56.f;
-    static constexpr float ColumnWidth_Name = 420.f;
+    static constexpr float ColumnWidth_Name = 300.f;
     static constexpr float ColumnWidth_Quantity = 80.f;
     static constexpr float ColumnWidth_Mass = 100.f;
     static constexpr float ColumnWidth_Volume = 100.f;

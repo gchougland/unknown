@@ -237,6 +237,10 @@ void UEquipmentPanelWidget::NativeConstruct()
     // Ensure we receive events if Equipment is assigned post-construct
     if (Equipment)
     {
+        // Remove any existing bindings first to avoid duplicate delegate errors
+        Equipment->OnItemEquipped.RemoveAll(this);
+        Equipment->OnItemUnequipped.RemoveAll(this);
+        // Then add the bindings
         Equipment->OnItemEquipped.AddDynamic(this, &UEquipmentPanelWidget::OnItemEquipped);
         Equipment->OnItemUnequipped.AddDynamic(this, &UEquipmentPanelWidget::OnItemUnequipped);
     }

@@ -48,6 +48,11 @@ FReply UInventoryItemEntryWidget::NativeOnMouseButtonDown(const FGeometry& InGeo
 		OnContextRequested.Broadcast(Def, ScreenPos);
 		return FReply::Handled();
 	}
+	else if (InMouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		OnLeftClicked.Broadcast(Def);
+		return FReply::Handled();
+	}
     return Super::NativeOnMouseButtonDown(InGeometry, InMouseEvent);
 }
 

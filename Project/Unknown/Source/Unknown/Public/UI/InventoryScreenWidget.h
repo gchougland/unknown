@@ -51,9 +51,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category="Inventory")
 	void RefreshInventoryView();
 
+	// Internal refresh (public so player controller can call it)
+	UFUNCTION(BlueprintCallable, Category="Inventory")
+	void Refresh();
+
 	// Getters for context menu actions
 	UInventoryComponent* GetInventory() const { return Inventory; }
 	UEquipmentComponent* GetEquipment() const { return Equipment; }
+
+	// Transfer handlers (public so player controller can bind to storage window)
+	UFUNCTION(BlueprintCallable, Category="Inventory")
+	void HandleStorageItemLeftClick(const FGuid& ItemId);
 
     // Fired when the user presses Tab/I/Escape inside the widget
     UPROPERTY(BlueprintAssignable, Category="Inventory|Events")
@@ -67,8 +75,7 @@ protected:
     virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
 
 	void RebuildUI();
- void Refresh();
- bool HandleCloseKey(const FKey& Key);
+	bool HandleCloseKey(const FKey& Key);
 
  UFUNCTION()
  void HandleRowContextRequested(UItemDefinition* ItemType, FVector2D ScreenPosition);
@@ -79,7 +86,12 @@ protected:
  UFUNCTION()
  void HandleListRowUnhovered();
 
- void OpenContextMenu(UItemDefinition* ItemType, const FVector2D& ScreenPosition);
+ UFUNCTION()
+ void HandleInventoryRowLeftClicked(UItemDefinition* ItemType);
+
+	void OpenContextMenu(UItemDefinition* ItemType, const FVector2D& ScreenPosition);
+
+	void HandleInventoryItemLeftClick(UItemDefinition* ItemType);
 
  // React to equipment changes so we can refresh the UI immediately after equip/unequip
  UFUNCTION()
@@ -94,8 +106,12 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UStorageComponent> Storage;
 
-	UPROPERTY(Transient)
-	bool bOpen = false;
+    UPROPERTY(Transient)
+    bool bOpen = false;
+    
+    // Track if UI has been built to avoid rebuilding unnecessarily
+    UPROPERTY(Transient)
+    bool bUIBuilt = false;
 
 	// UI refs
  UPROPERTY(Transient)
@@ -147,6 +163,9 @@ private:
     void BindEvents();
     void InitializeUI();
     void PrewarmIcons();
+    
+    // Update storage window visibility without rebuilding entire UI
+    void UpdateStorageWindowVisibility();
 
     // Equipment access for RMB EQUIP and equipment panel (set during Open)
     UPROPERTY(Transient)
@@ -158,4 +177,7 @@ private:
 
     UPROPERTY(Transient)
     TObjectPtr<UEquipmentPanelWidget> EquipmentPanel;
+
+    // Storage window is managed separately by FirstPersonPlayerController
+    // No need to store it here
 };

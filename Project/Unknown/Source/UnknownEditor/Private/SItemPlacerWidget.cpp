@@ -263,10 +263,23 @@ void SItemPlacerWidget::PlaceItemAtCursor(const FAssetData& AssetData)
  const FTransform BaseTransform(Rot, Loc, FVector(1.f, 1.f, 1.f));
  const FTransform FinalTransform = Def ? (Def->DefaultDropTransform * BaseTransform) : BaseTransform;
 
+ // Check for PickupActorClass override
+ TSubclassOf<AActor> ActorClass = AItemPickup::StaticClass();
+ if (Def && Def->PickupActorClass)
+ {
+	 ActorClass = Def->PickupActorClass;
+	 // Ensure it's a subclass of AItemPickup
+	 if (!ActorClass->IsChildOf(AItemPickup::StaticClass()))
+	 {
+		 UE_LOG(LogTemp, Warning, TEXT("[ItemPlacer] PickupActorClass %s is not a subclass of AItemPickup, using default"), *ActorClass->GetName());
+		 ActorClass = AItemPickup::StaticClass();
+	 }
+ }
+
  FActorSpawnParameters Params;
- Params.Name = MakeUniqueObjectName(World, AItemPickup::StaticClass(), FName(TEXT("ItemPickup")));
+ Params.Name = MakeUniqueObjectName(World, ActorClass, FName(TEXT("ItemPickup")));
  Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
- AItemPickup* Pickup = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), FinalTransform, Params);
+ AItemPickup* Pickup = World->SpawnActor<AItemPickup>(ActorClass, FinalTransform, Params);
 	if (Pickup)
 	{
 		Pickup->SetItemDef(Def);

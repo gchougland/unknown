@@ -8,6 +8,7 @@
 struct FInputActionValue;
 class UHotbarWidget;
 class UInventoryScreenWidget;
+class UStorageWindowWidget;
 class UItemDefinition;
 
 #include "FirstPersonPlayerController.generated.h"
@@ -46,6 +47,14 @@ public:
 	UFUNCTION(BlueprintPure, Category="UI")
 	UInventoryScreenWidget* GetInventoryScreen() const { return InventoryScreen; }
 
+	// Getter for storage window widget
+	UFUNCTION(BlueprintPure, Category="UI")
+	UStorageWindowWidget* GetStorageWindow();
+
+	// Open inventory with optional storage (public so it can be called from item use actions)
+	UFUNCTION(BlueprintCallable, Category="UI")
+	void OpenInventoryWithStorage(UStorageComponent* Storage = nullptr);
+
 protected:
 	// APlayerController
 	virtual void BeginPlay() override;
@@ -62,6 +71,9 @@ protected:
 	void OnSprintPressed(const struct FInputActionValue& Value);
 	void OnSprintReleased(const struct FInputActionValue& Value);
 	void OnInteract(const struct FInputActionValue& Value);
+	void OnInteractPressed(const struct FInputActionValue& Value);
+	void OnInteractOngoing(const struct FInputActionValue& Value);
+	void OnInteractReleased(const struct FInputActionValue& Value);
 	void OnRotateHeldPressed(const struct FInputActionValue& Value);
 	void OnRotateHeldReleased(const struct FInputActionValue& Value);
 	void OnThrow(const struct FInputActionValue& Value);
@@ -125,6 +137,10 @@ protected:
     UPROPERTY()
     TObjectPtr<class UInventoryScreenWidget> InventoryScreen;
 
+    // UI: storage window (separate from inventory screen)
+    UPROPERTY()
+    TObjectPtr<class UStorageWindowWidget> StorageWindow;
+
     // UI: progress bar for hold-to-drop
     UPROPERTY()
     TObjectPtr<class UDropProgressBarWidget> DropProgressBarWidget;
@@ -137,4 +153,9 @@ protected:
     static constexpr float HoldDropDuration = 0.75f;
     bool bIsHoldingDrop = false;
     bool bInstantActionExecuted = false;
+
+    // Hold-to-use state
+    float HoldUseTimer = 0.0f;
+    bool bIsHoldingUse = false;
+    bool bInstantUseExecuted = false;
 };

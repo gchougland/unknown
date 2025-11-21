@@ -9,7 +9,12 @@
 void UInventoryListWidget::SetInventory(UInventoryComponent* InInventory)
 {
 	Inventory = InInventory;
-	Refresh();
+	// Only refresh if the widget is already constructed (RootList exists)
+	// Otherwise, RebuildWidget() will call RebuildFromInventory() automatically
+	if (RootList)
+	{
+		Refresh();
+	}
 }
 
 void UInventoryListWidget::Refresh()
@@ -37,7 +42,12 @@ TSharedRef<SWidget> UInventoryListWidget::RebuildWidget()
 	if (WidgetTree)
 	{
 		RebuildUI();
-		RebuildFromInventory();
+		// RebuildFromInventory will use the current Inventory member variable
+		// Only rebuild if we have inventory set, otherwise it will be called later
+		if (Inventory)
+		{
+			RebuildFromInventory();
+		}
 	}
 	return Super::RebuildWidget();
 }
@@ -60,7 +70,12 @@ void UInventoryListWidget::HandleRowHovered(UItemDefinition* ItemType)
 
 void UInventoryListWidget::HandleRowUnhovered()
 {
-    OnRowUnhovered.Broadcast();
+	OnRowUnhovered.Broadcast();
+}
+
+void UInventoryListWidget::HandleRowLeftClicked(UItemDefinition* ItemType)
+{
+	OnRowLeftClicked.Broadcast(ItemType);
 }
 
 void UInventoryListWidget::RebuildUI()
@@ -78,11 +93,16 @@ TArray<UInventoryListWidget::FAggregateRow> UInventoryListWidget::BuildAggregate
 	TArray<FAggregateRow> Out;
 	if (!Inventory)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[InventoryListWidget] BuildAggregate: Inventory is null"));
 		return Out;
 	}
+	
+	const TArray<FItemEntry>& Entries = Inventory->GetEntries();
+	UE_LOG(LogTemp, Display, TEXT("[InventoryListWidget] BuildAggregate: Inventory has %d entries"), Entries.Num());
+	
 	// Aggregate by pointer
 	TMap<UItemDefinition*, FAggregateRow> Map;
-	for (const FItemEntry& E : Inventory->GetEntries())
+	for (const FItemEntry& E : Entries)
 	{
 		if (!E.Def) { continue; }
 		FAggregateRow* Row = Map.Find(E.Def);
@@ -95,6 +115,8 @@ TArray<UInventoryListWidget::FAggregateRow> UInventoryListWidget::BuildAggregate
 		Row->TotalVolume += FMath::Max(0.f, E.Def->VolumePerUnit);
 	}
 	Map.GenerateValueArray(Out);
+	UE_LOG(LogTemp, Display, TEXT("[InventoryListWidget] BuildAggregate: Created %d aggregate rows"), Out.Num());
+	
 	// Optional: sort by name
 	Out.Sort([](const FAggregateRow& A, const FAggregateRow& B)
 	{
@@ -109,20 +131,50 @@ void UInventoryListWidget::RebuildFromInventory()
 {
 	if (!WidgetTree || !RootList)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[InventoryListWidget] RebuildFromInventory: WidgetTree=%p, RootList=%p"), WidgetTree ? WidgetTree.Get() : nullptr, RootList ? RootList.Get() : nullptr);
 		return;
 	}
+	
+	// Clear existing children
 	RootList->ClearChildren();
+	
 	const TArray<FAggregateRow> Rows = BuildAggregate();
- for (const FAggregateRow& R : Rows)
- {
-     UInventoryItemEntryWidget* RowWidget = WidgetTree->ConstructWidget<UInventoryItemEntryWidget>(UInventoryItemEntryWidget::StaticClass());
-     RowWidget->SetData(R.Def, R.Count, R.TotalVolume);
-     RowWidget->OnContextRequested.AddDynamic(this, &UInventoryListWidget::HandleRowContextRequested);
-     RowWidget->OnHovered.AddDynamic(this, &UInventoryListWidget::HandleRowHovered);
-     RowWidget->OnUnhovered.AddDynamic(this, &UInventoryListWidget::HandleRowUnhovered);
-     if (UVerticalBoxSlot* VBSlot = RootList->AddChildToVerticalBox(RowWidget))
-     {
-         VBSlot->SetPadding(FMargin(2.f));
-     }
- }
+	UE_LOG(LogTemp, Display, TEXT("[InventoryListWidget] RebuildFromInventory: Adding %d rows to list"), Rows.Num());
+	
+	for (const FAggregateRow& R : Rows)
+	{
+		UInventoryItemEntryWidget* RowWidget = WidgetTree->ConstructWidget<UInventoryItemEntryWidget>(UInventoryItemEntryWidget::StaticClass());
+		if (!RowWidget)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[InventoryListWidget] Failed to construct row widget"));
+			continue;
+		}
+		
+		// Set data first
+		RowWidget->SetData(R.Def, R.Count, R.TotalVolume);
+		
+		// Bind events
+		RowWidget->OnContextRequested.AddDynamic(this, &UInventoryListWidget::HandleRowContextRequested);
+		RowWidget->OnLeftClicked.AddDynamic(this, &UInventoryListWidget::HandleRowLeftClicked);
+		RowWidget->OnHovered.AddDynamic(this, &UInventoryListWidget::HandleRowHovered);
+		RowWidget->OnUnhovered.AddDynamic(this, &UInventoryListWidget::HandleRowUnhovered);
+		
+		// Add to RootList - this will trigger widget construction automatically
+		if (UVerticalBoxSlot* VBSlot = RootList->AddChildToVerticalBox(RowWidget))
+		{
+			VBSlot->SetPadding(FMargin(2.f));
+			UE_LOG(LogTemp, Verbose, TEXT("[InventoryListWidget] Added row widget for %s"), R.Def ? *R.Def->GetName() : TEXT("NULL"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("[InventoryListWidget] Failed to add row widget to RootList"));
+		}
+	}
+	
+	// Force the RootList to update its slate representation
+	// This ensures all child widgets are properly constructed and visible
+	if (RootList)
+	{
+		RootList->TakeWidget();
+	}
 }

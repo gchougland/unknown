@@ -50,7 +50,11 @@ namespace InventoryScreenWidgetBuilder
         SizeBox->SetHeightOverride(InventoryUIConstants::InventoryScreen_Height);
         OutRefs.RootBorder->SetContent(SizeBox);
 
-        OutRefs.RootVBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("RootVBox"));
+        // Reuse existing RootVBox if provided, otherwise create new one
+        if (!OutRefs.RootVBox)
+        {
+            OutRefs.RootVBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("RootVBox"));
+        }
         SizeBox->SetContent(OutRefs.RootVBox);
     }
 
@@ -117,13 +121,35 @@ namespace InventoryScreenWidgetBuilder
         }
 
         // After the top bar, create a body HBox: Left = Inventory column (header+list+info), Right = Equipment panel
-        OutRefs.BodyHBox = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("BodyHBox"));
-        if (UVerticalBoxSlot* BodySlot = RootVBox->AddChildToVerticalBox(OutRefs.BodyHBox))
+        // Reuse existing BodyHBox if it exists in the widget tree
+        if (!OutRefs.BodyHBox)
         {
-            BodySlot->SetPadding(FMargin(0.f));
-            BodySlot->SetHorizontalAlignment(HAlign_Fill);
-            BodySlot->SetVerticalAlignment(VAlign_Fill);
-            FSlateChildSize FillSize; FillSize.SizeRule = ESlateSizeRule::Fill; BodySlot->SetSize(FillSize);
+            OutRefs.BodyHBox = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("BodyHBox"));
+        }
+        
+        // Only add to RootVBox if not already added
+        if (OutRefs.BodyHBox)
+        {
+            bool bAlreadyAdded = false;
+            for (int32 i = 0; i < RootVBox->GetChildrenCount(); i++)
+            {
+                if (RootVBox->GetChildAt(i) == OutRefs.BodyHBox)
+                {
+                    bAlreadyAdded = true;
+                    break;
+                }
+            }
+            
+            if (!bAlreadyAdded)
+            {
+                if (UVerticalBoxSlot* BodySlot = RootVBox->AddChildToVerticalBox(OutRefs.BodyHBox))
+                {
+                    BodySlot->SetPadding(FMargin(0.f));
+                    BodySlot->SetHorizontalAlignment(HAlign_Fill);
+                    BodySlot->SetVerticalAlignment(VAlign_Fill);
+                    FSlateChildSize FillSize; FillSize.SizeRule = ESlateSizeRule::Fill; BodySlot->SetSize(FillSize);
+                }
+            }
         }
     }
 
@@ -190,11 +216,14 @@ namespace InventoryScreenWidgetBuilder
         }
         UBorder* EquipInner = Cast<UBorder>(OutRefs.EquipOuter->GetContent());
         
-        // Create the panel
-        OutRefs.EquipmentPanel = WidgetTree->ConstructWidget<UEquipmentPanelWidget>(UEquipmentPanelWidget::StaticClass(), TEXT("EquipmentPanel"));
-        EquipInner->SetContent(OutRefs.EquipmentPanel);
-        if (OutRefs.EquipmentPanel)
+        // Create the panel only if it doesn't already exist (preserve existing widget)
+        if (!OutRefs.EquipmentPanel)
         {
+            OutRefs.EquipmentPanel = WidgetTree->ConstructWidget<UEquipmentPanelWidget>(UEquipmentPanelWidget::StaticClass(), TEXT("EquipmentPanel"));
+        }
+        if (EquipInner && OutRefs.EquipmentPanel)
+        {
+            EquipInner->SetContent(OutRefs.EquipmentPanel);
             OutRefs.EquipmentPanel->SetEquipmentComponent(Equipment);
         }
     }

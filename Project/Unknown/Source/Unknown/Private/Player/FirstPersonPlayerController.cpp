@@ -14,10 +14,16 @@
 #include "UI/HotbarWidget.h"
 #include "UI/DropProgressBarWidget.h"
 #include "UI/InventoryScreenWidget.h"
+#include "UI/StorageWindowWidget.h"
+#include "UI/StorageListWidget.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Inventory/InventoryComponent.h"
+#include "Inventory/StorageComponent.h"
 #include "Inventory/ItemDefinition.h"
 #include "Inventory/ItemPickup.h"
+#include "Inventory/ItemUseAction.h"
+#include "Inventory/StorageSerialization.h"
+#include "UI/MessageLogSubsystem.h"
 
 AFirstPersonPlayerController::AFirstPersonPlayerController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -282,7 +288,10 @@ void AFirstPersonPlayerController::SetupInputComponent()
 		}
 		if (InteractAction)
 		{
-			EIC->BindAction(InteractAction, ETriggerEvent::Started, this, &AFirstPersonPlayerController::OnInteract);
+			EIC->BindAction(InteractAction, ETriggerEvent::Started, this, &AFirstPersonPlayerController::OnInteractPressed);
+			EIC->BindAction(InteractAction, ETriggerEvent::Triggered, this, &AFirstPersonPlayerController::OnInteractOngoing);
+			EIC->BindAction(InteractAction, ETriggerEvent::Canceled, this, &AFirstPersonPlayerController::OnInteractReleased);
+			EIC->BindAction(InteractAction, ETriggerEvent::Completed, this, &AFirstPersonPlayerController::OnInteractReleased);
 		}
 		if (RotateHeldAction)
 		{
@@ -523,9 +532,30 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 						C->PutHeldItemBack();
 					}
 					
-					// Add to inventory first, then hold it
+					// Check if item can be stored
+					bool bCanBeStored = PickupEntry.Def && PickupEntry.Def->bCanBeStored;
+					
 					UInventoryComponent* Inv = C->GetInventory();
-					if (Inv && Inv->TryAdd(PickupEntry))
+					
+					// If this is a storage container, save its storage data before holding
+					if (UStorageComponent* StorageComp = TargetPickup->FindComponentByClass<UStorageComponent>())
+					{
+						StorageSerialization::SaveStorageToItemEntry(StorageComp, PickupEntry);
+					}
+					
+					// If item cannot be stored, hold it directly without adding to inventory
+					if (!bCanBeStored)
+					{
+						// Hold directly from pickup (no inventory needed)
+						if (C->HoldItem(PickupEntry))
+						{
+							UE_LOG(LogTemp, Display, TEXT("[Pickup] Holding %s directly (cannot be stored)"), *GetNameSafe(PickupEntry.Def));
+							TargetPickup->Destroy();
+							bInstantActionExecuted = true;
+						}
+					}
+					// If item can be stored, add to inventory first, then hold it
+					else if (Inv && Inv->TryAdd(PickupEntry))
 					{
 						// Now hold it from inventory
 						if (C->HoldItem(PickupEntry))
@@ -552,6 +582,121 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 			// Reset state
 			bIsHoldingDrop = false;
 			HoldDropTimer = 0.0f;
+			if (DropProgressBarWidget)
+			{
+				DropProgressBarWidget->SetVisible(false);
+			}
+		}
+	}
+
+	// Update hold-to-use progress bar
+	if (bIsHoldingUse && !bInstantUseExecuted && !bInventoryUIOpen)
+	{
+		AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn());
+		if (!C)
+		{
+			bIsHoldingUse = false;
+			HoldUseTimer = 0.0f;
+			if (DropProgressBarWidget)
+			{
+				DropProgressBarWidget->SetVisible(false);
+			}
+			return;
+		}
+
+		// Trace to see what player is looking at
+		FVector CamLoc; FRotator CamRot;
+		GetPlayerViewPoint(CamLoc, CamRot);
+		const FVector Start = CamLoc;
+		const FVector End = Start + CamRot.Vector() * 300.f;
+		FHitResult Hit;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(ItemPickup), false);
+		Params.AddIgnoredActor(C);
+		
+		bool bLookingAtPickup = false;
+		AItemPickup* TargetPickup = nullptr;
+		if (GetWorld() && GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
+		{
+			TargetPickup = Cast<AItemPickup>(Hit.GetActor());
+			bLookingAtPickup = (TargetPickup != nullptr);
+		}
+
+		// Update timer
+		HoldUseTimer += DeltaTime;
+		
+		// Only show progress bar after tap threshold (0.25s) has passed
+		const float TapThreshold = 0.25f;
+		if (HoldUseTimer >= TapThreshold)
+		{
+			if (DropProgressBarWidget && !DropProgressBarWidget->GetIsVisible())
+			{
+				DropProgressBarWidget->SetVisible(true);
+			}
+			
+			// Calculate progress from tap threshold onwards (0.25s to 0.75s = 0.5s range)
+			const float EffectiveHoldTime = HoldUseTimer - TapThreshold;
+			const float EffectiveHoldDuration = HoldDropDuration - TapThreshold;
+			const float Progress = FMath::Clamp(EffectiveHoldTime / EffectiveHoldDuration, 0.0f, 1.0f);
+			
+			if (DropProgressBarWidget)
+			{
+				DropProgressBarWidget->SetProgress(Progress);
+			}
+		}
+
+		// Check if we've held long enough (total time including tap threshold)
+		if (HoldUseTimer >= HoldDropDuration)
+		{
+			if (bLookingAtPickup && TargetPickup)
+			{
+				// Try to use the pickup item
+				FItemEntry PickupEntry = TargetPickup->GetItemEntry();
+				if (PickupEntry.IsValid() && PickupEntry.Def)
+				{
+					// Check if item has a USE action
+					if (PickupEntry.Def->DefaultUseAction)
+					{
+						// Create instance of use action and execute it
+						UItemUseAction* UseAction = NewObject<UItemUseAction>(this, PickupEntry.Def->DefaultUseAction);
+						if (UseAction)
+						{
+							if (UseAction->Execute(C, PickupEntry))
+							{
+								UE_LOG(LogTemp, Display, TEXT("[Interact] Used %s"), *GetNameSafe(PickupEntry.Def));
+								// Use action succeeded - item may have been consumed or modified
+								// Don't destroy pickup here - let the use action handle it if needed
+								bInstantUseExecuted = true;
+							}
+							else
+							{
+								UE_LOG(LogTemp, Display, TEXT("[Interact] Use action failed for %s"), *GetNameSafe(PickupEntry.Def));
+							}
+						}
+					}
+					else
+					{
+						// No USE action - show "Cannot use" message
+						if (UMessageLogSubsystem* MsgLog = GEngine ? GEngine->GetEngineSubsystem<UMessageLogSubsystem>() : nullptr)
+						{
+							MsgLog->PushMessage(FText::FromString(TEXT("Cannot use")));
+						}
+						UE_LOG(LogTemp, Display, TEXT("[Interact] Item %s has no USE action"), *GetNameSafe(PickupEntry.Def));
+					}
+				}
+			}
+			else
+			{
+				// Not looking at a pickup - nothing to use
+				if (UMessageLogSubsystem* MsgLog = GEngine ? GEngine->GetEngineSubsystem<UMessageLogSubsystem>() : nullptr)
+				{
+					MsgLog->PushMessage(FText::FromString(TEXT("Cannot use")));
+				}
+			}
+			
+			// Reset state
+			bIsHoldingUse = false;
+			bInstantUseExecuted = true; // Prevent OnInteractReleased from doing anything
+			HoldUseTimer = 0.0f;
 			if (DropProgressBarWidget)
 			{
 				DropProgressBarWidget->SetVisible(false);
@@ -660,81 +805,133 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 	}
 }
 
-void AFirstPersonPlayerController::OnInteract(const FInputActionValue& Value)
+void AFirstPersonPlayerController::OnInteractPressed(const FInputActionValue& Value)
 {
-	// Block interaction while inventory UI is open
 	if (bInventoryUIOpen)
 	{
 		return;
 	}
-	if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
+
+	AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn());
+	if (!C)
 	{
-		if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
+		return;
+	}
+
+	// Reset state
+	bInstantUseExecuted = false;
+	bIsHoldingUse = false;
+	HoldUseTimer = 0.0f;
+
+	// Check if holding physics object - release it immediately on tap
+	if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
+	{
+		if (PIC->IsHolding())
 		{
-	   if (PIC->IsHolding())
-			{
-				UE_LOG(LogTemp, Display, TEXT("[Interact] Releasing currently held object."));
-				// Ensure rotate state is cleared when we release
-				bRotateHeld = false;
-				PIC->SetRotateHeld(false);
-				PIC->Release();
-				return;
-			}
-
-			// Perform a line trace from the camera to try to pick a physics object
-			FVector CamLoc; FRotator CamRot;
-			GetPlayerViewPoint(CamLoc, CamRot);
-			const FVector Dir = CamRot.Vector();
-			const float MaxDist = PIC->GetMaxPickupDistance();
-			const FVector Start = CamLoc;
-			const FVector End = Start + Dir * MaxDist;
-
-			UE_LOG(LogTemp, Display, TEXT("[Interact] Trace Start=%s End=%s MaxDist=%.1f"), *Start.ToString(), *End.ToString(), MaxDist);
-
-			FHitResult Hit;
-			FCollisionQueryParams Params(SCENE_QUERY_STAT(PhysicsInteract), /*bTraceComplex*/ false);
-			Params.AddIgnoredActor(C);
-
-			if (GetWorld() && GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
-				{
-					AActor* HitActor = Hit.GetActor();
-					UPrimitiveComponent* Prim = Hit.GetComponent();
-					UE_LOG(LogTemp, Display, TEXT("[Interact] Hit Actor=%s Comp=%s Channel=Interactable Simulating=%s"),
-						HitActor ? *HitActor->GetName() : TEXT("<None>"),
-						Prim ? *Prim->GetName() : TEXT("<None>"),
-						Prim && Prim->IsSimulatingPhysics() ? TEXT("true") : TEXT("false"));
-					if (Prim && Prim->IsSimulatingPhysics())
-					{
-						// Prefer authored socket "HoldPivot"; fallback to Center of Mass
-						FVector PivotWorld = Hit.ImpactPoint;
-						if (UStaticMeshComponent* SMC = Cast<UStaticMeshComponent>(Prim))
-						{
-							static const FName HoldPivotSocket(TEXT("HoldPivot"));
-							if (SMC->DoesSocketExist(HoldPivotSocket))
-							{
-								PivotWorld = SMC->GetSocketLocation(HoldPivotSocket);
-							}
-						}
-						// If still equal to impact point, try Center of Mass
-						if (PivotWorld.Equals(Hit.ImpactPoint, KINDA_SMALL_NUMBER))
-						{
-							PivotWorld = Prim->GetCenterOfMass();
-						}
-						const float DistanceToPivot = (PivotWorld - Start).Length();
-						const bool bBegan = PIC->BeginHold(Prim, PivotWorld, DistanceToPivot);
-						UE_LOG(LogTemp, Display, TEXT("[Interact] BeginHold (pivot=%s) %s Dist=%.1f"), *PivotWorld.ToString(), bBegan ? TEXT("true") : TEXT("false"), DistanceToPivot);
-					}
-					else
-					{
-						UE_LOG(LogTemp, Display, TEXT("[Interact] Ignored hit because component is not simulating physics."));
-					}
-				}
-				else
-				{
-					UE_LOG(LogTemp, Display, TEXT("[Interact] Trace miss."));
-				}
+			// This is a tap - release immediately
+			UE_LOG(LogTemp, Display, TEXT("[Interact] Releasing currently held object."));
+			bRotateHeld = false;
+			PIC->SetRotateHeld(false);
+			PIC->Release();
+			return;
 		}
 	}
+
+	// Start hold timer for use action
+	bIsHoldingUse = true;
+	// Don't show progress bar yet - wait for tap threshold to pass
+}
+
+void AFirstPersonPlayerController::OnInteractOngoing(const FInputActionValue& Value)
+{
+	// This is called every frame while E is held
+	// Actual timer update happens in PlayerTick
+}
+
+void AFirstPersonPlayerController::OnInteractReleased(const FInputActionValue& Value)
+{
+	if (bInstantUseExecuted)
+	{
+		// Reset flag for next press
+		bInstantUseExecuted = false;
+		return;
+	}
+
+	// Check if this was a tap (very short press) vs a hold
+	const float TapThreshold = 0.25f;
+	const bool bWasTap = (HoldUseTimer < TapThreshold);
+
+	if (bIsHoldingUse)
+	{
+		if (bWasTap)
+		{
+			// This was a tap - execute tap behavior (physics interaction)
+			if (DropProgressBarWidget)
+			{
+				DropProgressBarWidget->SetVisible(false);
+			}
+
+			AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn());
+			if (C && !bInventoryUIOpen)
+			{
+				if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
+				{
+					// Perform a line trace from the camera to try to pick a physics object
+					FVector CamLoc; FRotator CamRot;
+					GetPlayerViewPoint(CamLoc, CamRot);
+					const FVector Dir = CamRot.Vector();
+					const float MaxDist = PIC->GetMaxPickupDistance();
+					const FVector Start = CamLoc;
+					const FVector End = Start + Dir * MaxDist;
+
+					FHitResult Hit;
+					FCollisionQueryParams Params(SCENE_QUERY_STAT(PhysicsInteract), false);
+					Params.AddIgnoredActor(C);
+
+					if (GetWorld() && GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
+					{
+						UPrimitiveComponent* Prim = Hit.GetComponent();
+						if (Prim && Prim->IsSimulatingPhysics())
+						{
+							// Prefer authored socket "HoldPivot"; fallback to Center of Mass
+							FVector PivotWorld = Hit.ImpactPoint;
+							if (UStaticMeshComponent* SMC = Cast<UStaticMeshComponent>(Prim))
+							{
+								static const FName HoldPivotSocket(TEXT("HoldPivot"));
+								if (SMC->DoesSocketExist(HoldPivotSocket))
+								{
+									PivotWorld = SMC->GetSocketLocation(HoldPivotSocket);
+								}
+							}
+							// If still equal to impact point, try Center of Mass
+							if (PivotWorld.Equals(Hit.ImpactPoint, KINDA_SMALL_NUMBER))
+							{
+								PivotWorld = Prim->GetCenterOfMass();
+							}
+							const float DistanceToPivot = (PivotWorld - Start).Length();
+							PIC->BeginHold(Prim, PivotWorld, DistanceToPivot);
+						}
+					}
+				}
+			}
+		}
+		// If it was a hold that was canceled, just cancel without doing anything
+
+		// Reset state
+		bIsHoldingUse = false;
+		HoldUseTimer = 0.0f;
+		if (DropProgressBarWidget)
+		{
+			DropProgressBarWidget->SetVisible(false);
+		}
+	}
+}
+
+// Legacy handler - kept for compatibility but should not be called
+void AFirstPersonPlayerController::OnInteract(const FInputActionValue& Value)
+{
+	// This should not be called anymore, but redirect to pressed handler for safety
+	OnInteractPressed(Value);
 }
 
 void AFirstPersonPlayerController::OnRotateHeldPressed(const FInputActionValue& Value)
@@ -830,6 +1027,10 @@ void AFirstPersonPlayerController::ToggleInventory()
 			UE_LOG(LogTemp, Display, TEXT("[PC] Inventory widget created and added to viewport"));
 		}
 	}
+	else
+	{
+		InventoryScreen->SetAnchorsInViewport(FAnchors(0.2f, 0.2f, 0.8f, 0.8f));
+	}
 
 	if (!InventoryScreen)
 	{
@@ -842,12 +1043,20 @@ void AFirstPersonPlayerController::ToggleInventory()
 	{
 		bInventoryUIOpen = false;
 		InventoryScreen->Close();
-  // Restore crosshair/highlight when closing inventory
-  if (InteractHighlightWidget)
-  {
-      InteractHighlightWidget->SetCrosshairEnabled(true);
-      InteractHighlightWidget->SetVisible(false); // will auto-show next tick if a target exists
-  }
+		
+		// Close storage window if it's open
+		if (StorageWindow && StorageWindow->IsOpen())
+		{
+			StorageWindow->Close();
+			StorageWindow->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		
+		// Restore crosshair/highlight when closing inventory
+		if (InteractHighlightWidget)
+		{
+			InteractHighlightWidget->SetCrosshairEnabled(true);
+			InteractHighlightWidget->SetVisible(false); // will auto-show next tick if a target exists
+		}
 		FInputModeGameOnly GM;
 		SetInputMode(GM);
 		SetIgnoreLookInput(false);
@@ -879,6 +1088,137 @@ void AFirstPersonPlayerController::ToggleInventory()
 		bShowMouseCursor = true;
 		UE_LOG(LogTemp, Display, TEXT("[PC] Inventory opened; using UIOnly input"));
 	}
+}
+
+void AFirstPersonPlayerController::OpenInventoryWithStorage(UStorageComponent* StorageComp)
+{
+	// Lazy-create inventory widget if needed
+	if (!InventoryScreen)
+	{
+		InventoryScreen = CreateWidget<UInventoryScreenWidget>(this, UInventoryScreenWidget::StaticClass());
+		if (InventoryScreen)
+		{
+			// Position inventory screen to the right (60% of screen, starting at 40%)
+			InventoryScreen->AddToViewport(900);
+			InventoryScreen->SetAnchorsInViewport(FAnchors(0.4f, 0.2f, 0.9f, 0.8f));
+			InventoryScreen->SetAlignmentInViewport(FVector2D(0.f, 0.f));
+			// Close the inventory when the widget requests it (Tab/I/Esc)
+			InventoryScreen->OnRequestClose.AddDynamic(this, &AFirstPersonPlayerController::ToggleInventory);
+			UE_LOG(LogTemp, Display, TEXT("[PC] Inventory widget created and added to viewport"));
+		}
+	}
+	else
+	{
+		InventoryScreen->SetAnchorsInViewport(FAnchors(0.4f, 0.2f, 0.9f, 0.8f));
+	}
+
+	if (!InventoryScreen)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[PC] OpenInventoryWithStorage: InventoryScreen is null (failed to create)"));
+		return;
+	}
+
+	// Get player inventory
+	UInventoryComponent* PlayerInv = nullptr;
+	if (AFirstPersonCharacter* Char = Cast<AFirstPersonCharacter>(GetPawn()))
+	{
+		PlayerInv = Char->GetInventory();
+	}
+
+	// Open or update inventory screen
+	const bool bCurrentlyOpen = InventoryScreen->IsOpen();
+	if (!bCurrentlyOpen)
+	{
+		// Open inventory with storage reference (so left-click transfer works)
+		InventoryScreen->Open(PlayerInv, StorageComp);
+		bInventoryUIOpen = true;
+		
+		// Hide crosshair/highlight behind the inventory
+		if (InteractHighlightWidget)
+		{
+			InteractHighlightWidget->SetCrosshairEnabled(false);
+			InteractHighlightWidget->SetVisible(false);
+		}
+		
+		// Switch to UI-only input and ignore game look/move
+		FInputModeUIOnly Mode;
+		Mode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		SetInputMode(Mode);
+		SetIgnoreLookInput(true);
+		SetIgnoreMoveInput(true);
+		bShowMouseCursor = true;
+		UE_LOG(LogTemp, Display, TEXT("[PC] Inventory opened with storage; using UIOnly input"));
+	}
+	else
+	{
+		// Already open - just refresh
+		InventoryScreen->Refresh();
+		UE_LOG(LogTemp, Display, TEXT("[PC] Updated open inventory with storage"));
+	}
+
+	// Show and open storage window separately (to the left of inventory)
+	if (StorageComp)
+	{
+		UStorageWindowWidget* StorageWin = GetStorageWindow();
+		if (StorageWin)
+		{
+			// Position storage window to the left (40% of screen, starting at 5%)
+			StorageWin->SetAnchorsInViewport(FAnchors(0.05f, 0.2f, 0.4f, 0.8f));
+			StorageWin->SetAlignmentInViewport(FVector2D(0.f, 0.f));
+			
+			// Get ItemDefinition from the storage component's owner (should be an AItemPickup)
+			UItemDefinition* ContainerDef = nullptr;
+			if (AActor* StorageOwner = StorageComp->GetOwner())
+			{
+				if (AItemPickup* Pickup = Cast<AItemPickup>(StorageOwner))
+				{
+					ContainerDef = Pickup->GetItemDef();
+				}
+			}
+			
+			// Open the storage window
+			StorageWin->Open(StorageComp, ContainerDef);
+			StorageWin->SetVisibility(ESlateVisibility::Visible);
+			
+			// Bind storage list left-click handler
+			if (UStorageListWidget* StorageList = StorageWin->GetStorageList())
+			{
+				StorageList->OnItemLeftClicked.RemoveAll(InventoryScreen);
+				StorageList->OnItemLeftClicked.AddDynamic(InventoryScreen, &UInventoryScreenWidget::HandleStorageItemLeftClick);
+				UE_LOG(LogTemp, Display, TEXT("[PC] Storage window opened and StorageList bound"));
+			}
+			
+			// Storage changed delegates are bound in StorageWindowWidget::Open()
+		}
+	}
+	else
+	{
+		// Hide storage window if no storage
+		if (StorageWindow)
+		{
+			StorageWindow->Close();
+			StorageWindow->SetVisibility(ESlateVisibility::Collapsed);
+		}
+	}
+}
+
+UStorageWindowWidget* AFirstPersonPlayerController::GetStorageWindow()
+{
+	// Lazy-create storage window widget
+	if (!StorageWindow)
+	{
+		StorageWindow = CreateWidget<UStorageWindowWidget>(this, UStorageWindowWidget::StaticClass());
+		if (StorageWindow)
+		{
+			StorageWindow->AddToViewport(901); // Higher z-order than inventory (900)
+			// Position to the left of inventory screen (40% width, starting at 5%)
+			StorageWindow->SetAnchorsInViewport(FAnchors(0.05f, 0.2f, 0.4f, 0.8f));
+			StorageWindow->SetAlignmentInViewport(FVector2D(0.f, 0.f));
+			StorageWindow->SetVisibility(ESlateVisibility::Collapsed); // Hidden by default
+			UE_LOG(LogTemp, Display, TEXT("[PC] Storage window widget created and added to viewport"));
+		}
+	}
+	return StorageWindow;
 }
 
 void AFirstPersonPlayerController::OnPickupPressed(const FInputActionValue& Value)
@@ -966,26 +1306,39 @@ void AFirstPersonPlayerController::OnPickupReleased(const FInputActionValue& Val
 			{
 				if (AItemPickup* Pickup = Cast<AItemPickup>(Hit.GetActor()))
 				{
-					// Tap on pickup: add to inventory
+					// Tap on pickup: add to inventory (if it can be stored)
 					UItemDefinition* Def = Pickup->GetItemDef();
 					if (Def)
 					{
-						UInventoryComponent* Inv = C->GetInventory();
-						if (Inv)
+						// Check if item can be stored
+						if (!Def->bCanBeStored)
 						{
-							FItemEntry Entry; Entry.Def = Def; Entry.ItemId = FGuid::NewGuid();
-							if (Inv->TryAdd(Entry))
+							UE_LOG(LogTemp, Display, TEXT("[Pickup] Item %s cannot be stored (bCanBeStored is false)"), *Def->GetName());
+							// Push message to message log
+							if (UMessageLogSubsystem* MsgLog = GEngine ? GEngine->GetEngineSubsystem<UMessageLogSubsystem>() : nullptr)
 							{
-								UE_LOG(LogTemp, Display, TEXT("[Pickup] Added %s to inventory"), *Def->GetName());
-								Pickup->Destroy();
-								if (bInventoryUIOpen && InventoryScreen)
-								{
-									InventoryScreen->RefreshInventoryView();
-								}
+								MsgLog->PushMessage(FText::FromString(FString::Printf(TEXT("%s cannot be stored"), *Def->DisplayName.ToString())));
 							}
-							else
+						}
+						else
+						{
+							UInventoryComponent* Inv = C->GetInventory();
+							if (Inv)
 							{
-								UE_LOG(LogTemp, Display, TEXT("[Pickup] Inventory full or invalid item; could not add %s"), *Def->GetName());
+								FItemEntry Entry; Entry.Def = Def; Entry.ItemId = FGuid::NewGuid();
+								if (Inv->TryAdd(Entry))
+								{
+									UE_LOG(LogTemp, Display, TEXT("[Pickup] Added %s to inventory"), *Def->GetName());
+									Pickup->Destroy();
+									if (bInventoryUIOpen && InventoryScreen)
+									{
+										InventoryScreen->RefreshInventoryView();
+									}
+								}
+								else
+								{
+									UE_LOG(LogTemp, Display, TEXT("[Pickup] Inventory full or invalid item; could not add %s"), *Def->GetName());
+								}
 							}
 						}
 					}

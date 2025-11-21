@@ -4,6 +4,9 @@
 #include "Inventory/ItemDefinition.h"
 #include "Inventory/ItemTypes.h"
 #include "Inventory/EquipmentComponent.h"
+#include "UI/StorageWindowWidget.h"
+#include "UI/StorageListWidget.h"
+#include "UI/MessageLogSubsystem.h"
 #include "Components/Border.h"
 #include "Components/VerticalBox.h"
 #include "Components/VerticalBoxSlot.h"
@@ -24,13 +27,15 @@
 #include "UI/InventoryUIConstants.h"
 #include "UI/InventoryScreenWidgetBuilder.h"
 #include "Icons/ItemIconSubsystem.h"
+#include "Engine/Engine.h"
 
 TSharedRef<SWidget> UInventoryScreenWidget::RebuildWidget()
 {
-    // Build the widget tree here so SObjectWidget doesn’t fall back to SSpacer
-    if (WidgetTree)
+    // Build the widget tree here so SObjectWidget doesn't fall back to SSpacer
+    if (WidgetTree && !bUIBuilt)
     {
         RebuildUI();
+        bUIBuilt = true;
     }
     return Super::RebuildWidget();
 }
@@ -41,32 +46,11 @@ void UInventoryScreenWidget::NativeConstruct()
     UE_LOG(LogTemp, Display, TEXT("[InventoryScreen] NativeConstruct (this=%s)"), *GetName());
     SetVisibility(ESlateVisibility::Collapsed);
     SetIsFocusable(true);
-    UE_LOG(LogTemp, Display, TEXT("[InventoryScreen] Constructed; RootWidget=%s Visible=%d"), *GetNameSafe(WidgetTree ? WidgetTree->RootWidget : nullptr), GetVisibility() == ESlateVisibility::Visible);
 }
 
 void UInventoryScreenWidget::NativeDestruct()
 {
-    // Proactively unbind any dynamic delegates we added to avoid duplicates if the widget is reconstructed
-    if (InventoryList)
-    {
-        InventoryList->OnRowContextRequested.RemoveAll(this);
-        InventoryList->OnRowHovered.RemoveAll(this);
-        InventoryList->OnRowUnhovered.RemoveAll(this);
-    }
     Super::NativeDestruct();
-}
-
-void UInventoryScreenWidget::SetTerminalStyle(const FLinearColor& InBackground, const FLinearColor& InBorder, const FLinearColor& InText)
-{
-    Background = InBackground;
-    Border = InBorder;
-    Text = InText;
-    Refresh();
-}
-
-void UInventoryScreenWidget::RefreshInventoryView()
-{
-    Refresh();
 }
 
 void UInventoryScreenWidget::RebuildUI()
@@ -76,7 +60,7 @@ void UInventoryScreenWidget::RebuildUI()
         return;
     }
 
-    // Build UI structure using builder functions
+    // Build UI structure using builder functions - only called once during initial construction
     InventoryScreenWidgetBuilder::FWidgetReferences Refs;
     
     // Build root layout
@@ -88,20 +72,23 @@ void UInventoryScreenWidget::RebuildUI()
     InventoryScreenWidgetBuilder::BuildTopBar(WidgetTree, RootVBox, Text, Refs);
     TitleText = Refs.TitleText;
     VolumeText = Refs.VolumeText;
-    UpdateVolumeReadout();
 
     // Build body layout
     InventoryScreenWidgetBuilder::BuildBodyLayout(WidgetTree, RootVBox, Refs);
+    UHorizontalBox* BodyHBox = Refs.BodyHBox;
     
-    // Left inventory column
+    // Build inventory column (left side, takes up available space)
     UVerticalBox* LeftColumnVBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("InventoryColumnVBox"));
     InventoryColumnVBox = LeftColumnVBox;
-    if (UHorizontalBoxSlot* LeftSlot = Refs.BodyHBox->AddChildToHorizontalBox(LeftColumnVBox))
+    if (UHorizontalBoxSlot* InventorySlot = BodyHBox->AddChildToHorizontalBox(LeftColumnVBox))
     {
-        LeftSlot->SetPadding(FMargin(0.f, 0.f, InventoryUIConstants::Padding_InnerSmall, 0.f));
-        LeftSlot->SetHorizontalAlignment(HAlign_Fill);
-        LeftSlot->SetVerticalAlignment(VAlign_Fill);
-        FSlateChildSize FillSize; FillSize.SizeRule = ESlateSizeRule::Fill; LeftSlot->SetSize(FillSize);
+        InventorySlot->SetPadding(FMargin(0.f, 0.f, InventoryUIConstants::Padding_InnerSmall, 0.f));
+        InventorySlot->SetHorizontalAlignment(HAlign_Fill);
+        InventorySlot->SetVerticalAlignment(VAlign_Fill);
+        FSlateChildSize FillSize;
+        FillSize.SizeRule = ESlateSizeRule::Fill;
+        FillSize.Value = 1.0f; // Takes up remaining space (equipment panel will be auto width)
+        InventorySlot->SetSize(FillSize);
     }
 
     // Build inventory column (header, list, info)
@@ -109,10 +96,8 @@ void UInventoryScreenWidget::RebuildUI()
     InventoryList = Refs.InventoryList;
     if (InventoryList)
     {
-        // Subscribe to row context requests (RMB) — ensure we don't double-bind across rebuilds
-        InventoryList->OnRowContextRequested.AddUniqueDynamic(this, &UInventoryScreenWidget::HandleRowContextRequested);
-        InventoryList->OnRowHovered.AddUniqueDynamic(this, &UInventoryScreenWidget::HandleListRowHovered);
-        InventoryList->OnRowUnhovered.AddUniqueDynamic(this, &UInventoryScreenWidget::HandleListRowUnhovered);
+        // Ensure the widget is fully constructed
+        InventoryList->TakeWidget();
     }
     InfoOuterBorder = Refs.InfoOuterBorder;
     InfoInnerBorder = Refs.InfoInnerBorder;
@@ -121,9 +106,16 @@ void UInventoryScreenWidget::RebuildUI()
     InfoDescText = Refs.InfoDescText;
     ClearInfoPanel();
 
-    // Build equipment panel
-    InventoryScreenWidgetBuilder::BuildEquipmentPanel(WidgetTree, Refs.BodyHBox, Border, Background, Equipment, Refs);
+    // Build equipment panel (right side, always last)
+    InventoryScreenWidgetBuilder::BuildEquipmentPanel(WidgetTree, BodyHBox, Border, Background, Equipment, Refs);
     EquipmentPanel = Refs.EquipmentPanel;
+}
+
+void UInventoryScreenWidget::UpdateStorageWindowVisibility()
+{
+    // Storage window is managed separately by FirstPersonPlayerController
+    // This function is kept for compatibility but doesn't need to do anything
+    // The storage window should be shown/hidden by the player controller
 }
 
 void UInventoryScreenWidget::HandleRowContextRequested(UItemDefinition* ItemType, FVector2D ScreenPosition)
@@ -136,124 +128,21 @@ UItemDefinition* UInventoryScreenWidget::GetSelectedItemType() const
     return InventoryList ? InventoryList->GetSelectedType() : nullptr;
 }
 
+void UInventoryScreenWidget::RefreshInventoryView()
+{
+    Refresh();
+}
+
 void UInventoryScreenWidget::Refresh()
 {
-    if (RootBorder)
-    {
-        RootBorder->SetBrushColor(Background);
-    }
-    if (TitleText)
-    {
-        TitleText->SetColorAndOpacity(Text);
-    }
-    if (VolumeText)
-    {
-        VolumeText->SetColorAndOpacity(Text);
-    }
-    // Keep the list up to date
     if (InventoryList)
     {
-        InventoryList->SetInventory(Inventory);
         InventoryList->Refresh();
     }
     UpdateVolumeReadout();
-    // Re-apply style to info panel
-    if (InfoInnerBorder)
+    if (EquipmentPanel)
     {
-        FSlateBrush Brush; Brush.DrawAs = ESlateBrushDrawType::Box; Brush.TintColor = Background; Brush.Margin = FMargin(0.f);
-        InfoInnerBorder->SetBrush(Brush);
-    }
-    if (InfoOuterBorder)
-    {
-        FSlateBrush Brush; Brush.DrawAs = ESlateBrushDrawType::Box; Brush.TintColor = Border; Brush.Margin = FMargin(0.f);
-        InfoOuterBorder->SetBrush(Brush);
-    }
-    if (InfoNameText) { InfoNameText->SetColorAndOpacity(Text); }
-    if (InfoDescText) { InfoDescText->SetColorAndOpacity(Text); }
-}
-
-void UInventoryScreenWidget::HandleListRowHovered(UItemDefinition* ItemType)
-{
-    UpdateInfoPanelForDef(ItemType);
-}
-
-void UInventoryScreenWidget::HandleListRowUnhovered()
-{
-    ClearInfoPanel();
-}
-
-void UInventoryScreenWidget::UpdateInfoPanelForDef(UItemDefinition* Def)
-{
-    CurrentHoverDef = Def;
-    if (!Def)
-    {
-        ClearInfoPanel();
-        return;
-    }
-    if (InfoOuterBorder)
-    {
-        InfoOuterBorder->SetVisibility(ESlateVisibility::Visible);
-    }
-    UpdateInfoText(Def);
-    UpdateInfoIcon(Def);
-}
-
-void UInventoryScreenWidget::UpdateInfoText(UItemDefinition* Def)
-{
-    if (!Def)
-    {
-        return;
-    }
-    if (InfoNameText)
-    {
-        const FText Name = Def->DisplayName.IsEmpty() ? FText::FromString(Def->GetName()) : Def->DisplayName;
-        InfoNameText->SetText(Name);
-    }
-    if (InfoDescText)
-    {
-        InfoDescText->SetText(Def->Description);
-    }
-}
-
-void UInventoryScreenWidget::UpdateInfoIcon(UItemDefinition* Def)
-{
-    if (!InfoIcon || !Def)
-    {
-        return;
-    }
-
-    const FVector2D IconSize = InventoryUIConstants::IconSize_InfoPanel_Vec;
-    const FItemIconStyle Style = ItemIconHelper::CreateIconStyle();
-    
-    // Try synchronous load first
-    UTexture2D* IconTex = ItemIconHelper::LoadIconSync(Def, Style);
-    if (IconTex)
-    {
-        ItemIconHelper::ApplyIconToImage(InfoIcon, IconTex, IconSize);
-    }
-    else
-    {
-        // Clear icon while waiting
-        ItemIconHelper::ApplyIconToImage(InfoIcon, nullptr, IconSize);
-        
-        // Request async load
-        TWeakObjectPtr<UInventoryScreenWidget> WeakThis(this);
-        TWeakObjectPtr<UImage> WeakImage(InfoIcon);
-        UItemDefinition* RequestedDef = Def;
-        FOnItemIconReady Callback = FOnItemIconReady::CreateLambda([WeakThis, WeakImage, RequestedDef, IconSize](const UItemDefinition* ReadyDef, UTexture2D* ReadyTex)
-        {
-            if (!WeakThis.IsValid() || !WeakImage.IsValid() || ReadyTex == nullptr)
-            {
-                return;
-            }
-            // Ensure we're still showing the same item
-            if (WeakThis->CurrentHoverDef != RequestedDef)
-            {
-                return;
-            }
-            ItemIconHelper::ApplyIconToImage(WeakImage.Get(), ReadyTex, IconSize);
-        });
-        ItemIconHelper::LoadIconAsync(Def, Style, MoveTemp(Callback));
+        EquipmentPanel->Refresh();
     }
 }
 
@@ -310,6 +199,17 @@ void UInventoryScreenWidget::HandleEquipmentUnequipped(EEquipmentSlot InEquipSlo
 void UInventoryScreenWidget::Open(UInventoryComponent* InInventory, UStorageComponent* InStorage)
 {
     ResolveComponents(InInventory, InStorage);
+    
+    // Build UI only if not already built
+    if (!bUIBuilt)
+    {
+        RebuildUI();
+        bUIBuilt = true;
+    }
+    
+    // Update storage window visibility based on current storage state
+    UpdateStorageWindowVisibility();
+    
     BindEvents();
     InitializeUI();
     PrewarmIcons();
@@ -328,6 +228,8 @@ void UInventoryScreenWidget::ResolveComponents(UInventoryComponent* InInventory,
         Inventory = ComponentResolver::ResolveInventoryComponent(GetOwningPlayer());
     }
     Storage = InStorage;
+    
+    UE_LOG(LogTemp, Display, TEXT("[InventoryScreen] ResolveComponents: Inventory=%p, Storage=%p"), Inventory ? Inventory.Get() : nullptr, Storage ? Storage.Get() : nullptr);
 
     // Resolve Equipment component from the owning pawn (if available)
     Equipment = ComponentResolver::ResolveEquipmentComponent(GetOwningPlayer());
@@ -342,6 +244,20 @@ void UInventoryScreenWidget::BindEvents()
         Equipment->OnItemUnequipped.RemoveAll(this);
         Equipment->OnItemEquipped.AddDynamic(this, &UInventoryScreenWidget::HandleEquipmentEquipped);
         Equipment->OnItemUnequipped.AddDynamic(this, &UInventoryScreenWidget::HandleEquipmentUnequipped);
+    }
+
+    // Bind to inventory list events
+    if (InventoryList)
+    {
+        InventoryList->OnRowContextRequested.RemoveAll(this);
+        InventoryList->OnRowLeftClicked.RemoveAll(this);
+        InventoryList->OnRowHovered.RemoveAll(this);
+        InventoryList->OnRowUnhovered.RemoveAll(this);
+        
+        InventoryList->OnRowContextRequested.AddUniqueDynamic(this, &UInventoryScreenWidget::HandleRowContextRequested);
+        InventoryList->OnRowLeftClicked.AddUniqueDynamic(this, &UInventoryScreenWidget::HandleInventoryRowLeftClicked);
+        InventoryList->OnRowHovered.AddUniqueDynamic(this, &UInventoryScreenWidget::HandleListRowHovered);
+        InventoryList->OnRowUnhovered.AddUniqueDynamic(this, &UInventoryScreenWidget::HandleListRowUnhovered);
     }
 }
 
@@ -362,6 +278,9 @@ void UInventoryScreenWidget::InitializeUI()
         InventoryList->SetInventory(Inventory);
         InventoryList->Refresh();
     }
+
+    // Storage window is managed separately by FirstPersonPlayerController
+    // It will be shown/hidden and opened by the player controller
 
     Refresh();
     if (EquipmentPanel)
@@ -392,9 +311,12 @@ void UInventoryScreenWidget::PrewarmIcons()
     }
     if (Equipment)
     {
-        // Iterate all slots
-        const EEquipmentSlot Slots[] = { EEquipmentSlot::Head, EEquipmentSlot::Chest, EEquipmentSlot::Hands, EEquipmentSlot::Back, EEquipmentSlot::Primary, EEquipmentSlot::Secondary, EEquipmentSlot::Utility, EEquipmentSlot::Gadget };
-        for (EEquipmentSlot S : Slots)
+        // Iterate through all equipment slots manually
+        TArray<EEquipmentSlot> AllSlots = {
+            EEquipmentSlot::Head, EEquipmentSlot::Chest, EEquipmentSlot::Hands, EEquipmentSlot::Back,
+            EEquipmentSlot::Primary, EEquipmentSlot::Secondary, EEquipmentSlot::Utility, EEquipmentSlot::Gadget
+        };
+        for (EEquipmentSlot S : AllSlots)
         {
             FItemEntry EquippedEntry;
             if (Equipment->GetEquipped(S, EquippedEntry) && EquippedEntry.Def && !Seen.Contains(EquippedEntry.Def))
@@ -414,6 +336,10 @@ void UInventoryScreenWidget::Close()
 {
     bOpen = false;
     SetVisibility(ESlateVisibility::Collapsed);
+    
+    // Storage window is managed separately by FirstPersonPlayerController
+    // Clear storage reference when closing
+    Storage = nullptr;
 }
 
 FReply UInventoryScreenWidget::NativeOnPreviewKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
@@ -434,32 +360,229 @@ void UInventoryScreenWidget::UpdateVolumeReadout()
     {
         TargetText = Cast<UTextBlock>(WidgetTree->FindWidget(TEXT("VolumeText")));
     }
-    // Fallback to cached pointer if not found (e.g., early during construct)
     if (!TargetText)
     {
         TargetText = VolumeText;
     }
-    if (!TargetText)
+    if (!TargetText || !Inventory)
     {
         return;
     }
-    // Ensure we have a source inventory; if not, try to auto-resolve one from the owning pawn
-    if (!Inventory)
-    {
-        Inventory = ComponentResolver::ResolveInventoryComponent(GetOwningPlayer());
-    }
-
-    float Used = 0.f;
-    float Max = 0.f;
-    if (Inventory)
-    {
-        Used = FMath::Max(0.f, Inventory->GetUsedVolume());
-        Max = FMath::Max(0.f, Inventory->MaxVolume);
-    }
+    const float Used = Inventory->GetUsedVolume();
+    const float Max = Inventory->MaxVolume;
     const FString Str = FString::Printf(TEXT("Volume: %.1f / %.1f"), Used, Max);
     TargetText->SetText(FText::FromString(Str));
-    // Cache for next call if we didn't have it
-    VolumeText = TargetText;
+    if (VolumeText)
+    {
+        VolumeText->SetColorAndOpacity(Text);
+    }
+    // Note: Do NOT refresh InventoryList here - that causes infinite loops
+    // The list will be refreshed separately when needed
+}
+
+void UInventoryScreenWidget::UpdateInfoPanelForDef(UItemDefinition* Def)
+{
+    if (!Def)
+    {
+        ClearInfoPanel();
+        return;
+    }
+    CurrentHoverDef = Def;
+    UpdateInfoText(Def);
+    UpdateInfoIcon(Def);
+    if (InfoOuterBorder)
+    {
+        InfoOuterBorder->SetVisibility(ESlateVisibility::Visible);
+    }
+}
+
+void UInventoryScreenWidget::UpdateInfoText(UItemDefinition* Def)
+{
+    if (!Def)
+    {
+        return;
+    }
+    if (InfoNameText)
+    {
+        InfoNameText->SetText(Def->DisplayName.IsEmpty() ? FText::FromString(Def->GetName()) : Def->DisplayName);
+    }
+    if (InfoDescText)
+    {
+        InfoDescText->SetText(Def->Description);
+    }
+}
+
+void UInventoryScreenWidget::UpdateInfoIcon(UItemDefinition* Def)
+{
+    if (!Def || !InfoIcon)
+    {
+        return;
+    }
+    // Load icon asynchronously
+    ItemIconHelper::LoadIconAsync(Def, ItemIconHelper::CreateIconStyle(), FOnItemIconReady::CreateLambda([this](const UItemDefinition* IconDef, UTexture2D* Texture)
+    {
+        if (InfoIcon && Texture && IconDef == CurrentHoverDef)
+        {
+            // Apply icon with default size
+            ItemIconHelper::ApplyIconToImage(InfoIcon, Texture, FVector2D(64.f, 64.f));
+        }
+    }));
+}
+
+void UInventoryScreenWidget::HandleListRowHovered(UItemDefinition* ItemType)
+{
+    UpdateInfoPanelForDef(ItemType);
+}
+
+void UInventoryScreenWidget::HandleListRowUnhovered()
+{
+    ClearInfoPanel();
+}
+
+void UInventoryScreenWidget::OpenContextMenu(UItemDefinition* ItemType, const FVector2D& ScreenPosition)
+{
+    if (!ItemType)
+    {
+        return;
+    }
+    InventoryContextMenuBuilder::BuildContextMenu(this, ItemType, ScreenPosition);
+}
+
+void UInventoryScreenWidget::HandleInventoryRowLeftClicked(UItemDefinition* ItemType)
+{
+	if (!Storage || !Inventory || !ItemType)
+	{
+		return;
+	}
+
+	// Find the first item entry with this definition in inventory
+	const TArray<FItemEntry>& InventoryEntries = Inventory->GetEntries();
+	const FItemEntry* FoundEntry = InventoryEntries.FindByPredicate([&](const FItemEntry& E) { return E.Def == ItemType; });
+	
+	if (!FoundEntry || !FoundEntry->IsValid() || !FoundEntry->ItemId.IsValid())
+	{
+		return;
+	}
+
+	// Check if item can be stored
+	if (!FoundEntry->Def->bCanBeStored)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Transfer] Item %s cannot be stored"), *GetNameSafe(FoundEntry->Def));
+		return;
+	}
+
+	// Try to add to storage
+	FItemEntry EntryToTransfer = *FoundEntry;
+	if (Storage->CanAdd(EntryToTransfer))
+	{
+		// Remove from inventory first
+		if (Inventory->RemoveById(FoundEntry->ItemId))
+		{
+			// Try to add to storage
+			if (Storage->TryAdd(EntryToTransfer))
+			{
+				// Success - refresh both widgets
+				if (InventoryList)
+				{
+					InventoryList->Refresh();
+				}
+				UpdateVolumeReadout();
+				// Storage window refresh is handled by FirstPersonPlayerController
+				UE_LOG(LogTemp, Display, TEXT("[Transfer] Moved %s from inventory to storage"), *GetNameSafe(EntryToTransfer.Def));
+			}
+			else
+			{
+				// Failed to add to storage, put it back in inventory
+				Inventory->TryAdd(EntryToTransfer);
+				UE_LOG(LogTemp, Warning, TEXT("[Transfer] Failed to add %s to Storage, restored to Inventory"), *GetNameSafe(EntryToTransfer.Def));
+			}
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Transfer] Storage full, cannot add %s"), *GetNameSafe(EntryToTransfer.Def));
+		
+		// Push message to message log
+		if (UMessageLogSubsystem* MsgLog = GEngine ? GEngine->GetEngineSubsystem<UMessageLogSubsystem>() : nullptr)
+		{
+			MsgLog->PushMessage(FText::FromString(TEXT("Not enough space in container")));
+		}
+	}
+}
+
+void UInventoryScreenWidget::HandleStorageItemLeftClick(const FGuid& ItemId)
+{
+	if (!Storage || !Inventory || !ItemId.IsValid())
+	{
+		return;
+	}
+
+	// Find the entry in storage
+	const TArray<FItemEntry>& StorageEntries = Storage->GetEntries();
+	const FItemEntry* FoundEntry = StorageEntries.FindByPredicate([&](const FItemEntry& E) { return E.ItemId == ItemId; });
+	
+	if (!FoundEntry || !FoundEntry->IsValid())
+	{
+		return;
+	}
+
+	// Check if item can be stored
+	if (!FoundEntry->Def->bCanBeStored)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Transfer] Item %s cannot be stored"), *GetNameSafe(FoundEntry->Def));
+		return;
+	}
+
+	// Try to add to inventory
+	FItemEntry EntryToTransfer = *FoundEntry;
+	if (Inventory->CanAdd(EntryToTransfer))
+	{
+		// Remove from storage first
+		if (Storage->RemoveById(ItemId))
+		{
+			// Try to add to inventory
+			if (Inventory->TryAdd(EntryToTransfer))
+			{
+			// Success - refresh both widgets
+			if (InventoryList)
+			{
+				InventoryList->Refresh();
+			}
+			UpdateVolumeReadout();
+			// Storage window refresh is handled by FirstPersonPlayerController via OnStorageChanged delegate
+			UE_LOG(LogTemp, Display, TEXT("[Transfer] Moved %s from storage to inventory"), *GetNameSafe(EntryToTransfer.Def));
+			}
+			else
+			{
+				// Failed to add to inventory, put it back in storage
+				Storage->TryAdd(EntryToTransfer);
+				UE_LOG(LogTemp, Warning, TEXT("[Transfer] Failed to add %s to Inventory, restored to Storage"), *GetNameSafe(EntryToTransfer.Def));
+			}
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Transfer] Inventory full, cannot add %s"), *GetNameSafe(EntryToTransfer.Def));
+	}
+}
+
+bool UInventoryScreenWidget::HandleCloseKey(const FKey& Key)
+{
+    if (Key == EKeys::Tab || Key == EKeys::I || Key == EKeys::Escape)
+    {
+        OnRequestClose.Broadcast();
+        return true;
+    }
+    return false;
+}
+
+void UInventoryScreenWidget::SetTerminalStyle(const FLinearColor& InBorder, const FLinearColor& InBackground, const FLinearColor& InText)
+{
+    Border = InBorder;
+    Background = InBackground;
+    Text = InText;
+    // If UI is already built, we'd need to rebuild to apply new style, but for now just update the colors
+    // The style will be applied on next RebuildUI() call
 }
 
 FReply UInventoryScreenWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
@@ -469,20 +592,4 @@ FReply UInventoryScreenWidget::NativeOnKeyDown(const FGeometry& InGeometry, cons
         return FReply::Handled();
     }
     return Super::NativeOnKeyDown(InGeometry, InKeyEvent);
-}
-
-bool UInventoryScreenWidget::HandleCloseKey(const FKey& Key)
-{
-    if (Key == EKeys::Tab || Key == EKeys::I || Key == EKeys::Escape)
-    {
-        UE_LOG(LogTemp, Display, TEXT("[InventoryScreen] Close key pressed: %s"), *Key.ToString());
-        OnRequestClose.Broadcast();
-        return true;
-    }
-    return false;
-}
-
-void UInventoryScreenWidget::OpenContextMenu(UItemDefinition* ItemType, const FVector2D& ScreenPosition)
-{
-    InventoryContextMenuBuilder::BuildContextMenu(this, ItemType, ScreenPosition);
 }

@@ -12,6 +12,8 @@ class UItemDefinition;
 
 // Right-click context request on a row
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInventoryRowContextRequested, UItemDefinition*, ItemType, FVector2D, ScreenPosition);
+// Left-click on a row (for transfers)
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInventoryRowLeftClicked, UItemDefinition*, ItemType);
 // Hover notifications for a row
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInventoryRowHovered, UItemDefinition*, ItemType);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInventoryRowUnhovered);
@@ -32,6 +34,10 @@ public:
 	// Fired when user requests a context menu (RMB) on this row
 	UPROPERTY(BlueprintAssignable, Category="Inventory|Events")
 	FOnInventoryRowContextRequested OnContextRequested;
+
+	// Fired when user left-clicks this row (for transfers)
+	UPROPERTY(BlueprintAssignable, Category="Inventory|Events")
+	FOnInventoryRowLeftClicked OnLeftClicked;
 
 	// Terminal style colors
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Style")

@@ -185,7 +185,21 @@ AItemPickup* AItemPickup::SpawnDropped(UWorld* World, const AActor* ContextActor
         return nullptr;
     }
     const FTransform SpawnXform = BuildDropTransform(ContextActor, Def);
-    AItemPickup* Pickup = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), SpawnXform, Params);
+    
+    // Check for PickupActorClass override
+    TSubclassOf<AActor> ActorClass = AItemPickup::StaticClass();
+    if (Def && Def->PickupActorClass)
+    {
+        ActorClass = Def->PickupActorClass;
+        // Ensure it's a subclass of AItemPickup
+        if (!ActorClass->IsChildOf(AItemPickup::StaticClass()))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("[ItemPickup] PickupActorClass %s is not a subclass of AItemPickup, using default"), *ActorClass->GetName());
+            ActorClass = AItemPickup::StaticClass();
+        }
+    }
+    
+    AItemPickup* Pickup = World->SpawnActor<AItemPickup>(ActorClass, SpawnXform, Params);
     if (Pickup)
     {
         Pickup->SetItemDef(Def);
@@ -202,7 +216,21 @@ AItemPickup* AItemPickup::DropItemToWorld(UWorld* World, const AActor* ContextAc
     }
     
     const FTransform SpawnXform = BuildDropTransform(ContextActor, Entry.Def);
-    AItemPickup* Pickup = World->SpawnActor<AItemPickup>(AItemPickup::StaticClass(), SpawnXform, Params);
+    
+    // Check for PickupActorClass override
+    TSubclassOf<AActor> ActorClass = AItemPickup::StaticClass();
+    if (Entry.Def && Entry.Def->PickupActorClass)
+    {
+        ActorClass = Entry.Def->PickupActorClass;
+        // Ensure it's a subclass of AItemPickup
+        if (!ActorClass->IsChildOf(AItemPickup::StaticClass()))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("[ItemPickup] PickupActorClass %s is not a subclass of AItemPickup, using default"), *ActorClass->GetName());
+            ActorClass = AItemPickup::StaticClass();
+        }
+    }
+    
+    AItemPickup* Pickup = World->SpawnActor<AItemPickup>(ActorClass, SpawnXform, Params);
     if (!Pickup)
     {
         return nullptr;

@@ -10,6 +10,7 @@ class UItemUseAction;
 class UStaticMesh;
 class UBlueprint;
 class UItemEquipEffect;
+class AActor;
 
 #include "ItemDefinition.generated.h"
 
@@ -82,4 +83,16 @@ public:
     // Pluggable equip effects to apply/remove on equip/unequip. Instanced so per-item assets can tune effect properties.
     UPROPERTY(EditDefaultsOnly, Instanced, BlueprintReadOnly, Category="Item|Equipment", meta=(EditCondition="bEquippable"))
     TArray<TObjectPtr<UItemEquipEffect>> EquipEffects;
+
+    // Whether this item can be stored in inventory
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
+    bool bCanBeStored = true;
+
+    // Whether this item can be held in hand
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
+    bool bCanBeHeld = true;
+
+    // Optional blueprint override for spawning instead of AItemPickup (must inherit from AItemPickup or implement compatible interface)
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
+    TSubclassOf<AActor> PickupActorClass;
 };

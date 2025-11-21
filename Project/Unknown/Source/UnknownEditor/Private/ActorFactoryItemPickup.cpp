@@ -60,7 +60,20 @@ AActor* UActorFactoryItemPickup::SpawnActor(UObject* Asset, ULevel* InLevel, con
     // so authored offsets and scale are respected during drag/drop placement.
     const FTransform FinalTransform = ItemDef ? (ItemDef->DefaultDropTransform * Transform) : Transform;
 
-    AItemPickup* NewPickup = World->SpawnActorDeferred<AItemPickup>(AItemPickup::StaticClass(), FinalTransform, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn);
+    // Check for PickupActorClass override
+    TSubclassOf<AActor> ActorClass = AItemPickup::StaticClass();
+    if (ItemDef && ItemDef->PickupActorClass)
+    {
+        ActorClass = ItemDef->PickupActorClass;
+        // Ensure it's a subclass of AItemPickup
+        if (!ActorClass->IsChildOf(AItemPickup::StaticClass()))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("[ActorFactoryItemPickup] PickupActorClass %s is not a subclass of AItemPickup, using default"), *ActorClass->GetName());
+            ActorClass = AItemPickup::StaticClass();
+        }
+    }
+
+    AItemPickup* NewPickup = World->SpawnActorDeferred<AItemPickup>(ActorClass, FinalTransform, nullptr, nullptr, ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn);
     if (!NewPickup)
     {
         return nullptr;

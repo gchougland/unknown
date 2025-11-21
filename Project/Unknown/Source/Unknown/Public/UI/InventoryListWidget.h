@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "UI/InventoryItemEntryWidget.h" // Include to use FOnInventoryRowLeftClicked delegate
 #include "InventoryListWidget.generated.h"
 
 class UVerticalBox;
@@ -11,6 +12,7 @@ class UItemDefinition;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInventorySelectionChanged, UItemDefinition*, ItemType, int32, Count);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnInventoryRowContextMenu, UItemDefinition*, ItemType, FVector2D, ScreenPosition);
+// FOnInventoryRowLeftClicked is defined in InventoryItemEntryWidget.h (included above) - don't redeclare
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnInventoryRowHoveredGlobal, UItemDefinition*, ItemType);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnInventoryRowUnhoveredGlobal);
 
@@ -45,6 +47,10 @@ public:
  UPROPERTY(BlueprintAssignable, Category="Inventory|Events")
  FOnInventoryRowContextMenu OnRowContextRequested;
 
+ // Fired when a row is left-clicked
+ UPROPERTY(BlueprintAssignable, Category="Inventory|Events")
+ FOnInventoryRowLeftClicked OnRowLeftClicked;
+
  // Fired when any row in the list is hovered/unhovered
  UPROPERTY(BlueprintAssignable, Category="Inventory|Events")
  FOnInventoryRowHoveredGlobal OnRowHovered;
@@ -64,6 +70,9 @@ protected:
 
  UFUNCTION()
  void HandleRowUnhovered();
+
+ UFUNCTION()
+ void HandleRowLeftClicked(UItemDefinition* ItemType);
 
 	void RebuildUI();
 	void RebuildFromInventory();
