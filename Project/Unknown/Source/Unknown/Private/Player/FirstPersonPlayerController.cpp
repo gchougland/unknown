@@ -11,6 +11,7 @@
 #include "Engine/World.h"
 #include "Engine/EngineTypes.h"
 #include "UI/InteractHighlightWidget.h"
+#include "UI/InteractInfoWidget.h"
 #include "UI/HotbarWidget.h"
 #include "UI/DropProgressBarWidget.h"
 #include "UI/StatBarWidget.h"
@@ -190,6 +191,21 @@ void AFirstPersonPlayerController::BeginPlay()
 			// Keep widget always present but non-blocking; use SetVisible() only for the highlight border
 			InteractHighlightWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
 			InteractHighlightWidget->SetVisible(false);
+		}
+	}
+
+	// Create and add the interact info widget (full-screen overlay)
+	if (!InteractInfoWidget)
+	{
+		InteractInfoWidget = CreateWidget<UInteractInfoWidget>(this, UInteractInfoWidget::StaticClass());
+		if (InteractInfoWidget)
+		{
+			InteractInfoWidget->AddToViewport(1001); // slightly higher Z-order than highlight
+			// Fill the entire viewport so our paint coordinates map 1:1 to screen space
+			InteractInfoWidget->SetAnchorsInViewport(FAnchors(0.f, 0.f, 1.f, 1.f));
+			InteractInfoWidget->SetAlignmentInViewport(FVector2D(0.f, 0.f));
+			InteractInfoWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
+			InteractInfoWidget->SetVisible(false);
 		}
 	}
 
@@ -749,11 +765,19 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 		if (bInventoryOpen)
 		{
 			InteractHighlightWidget->SetVisible(false);
+			if (InteractInfoWidget)
+			{
+				InteractInfoWidget->SetVisible(false);
+			}
 		}
 		// Suppress highlight while holding a physics object
 		else if (PIC && PIC->IsHolding())
 		{
 			InteractHighlightWidget->SetVisible(false);
+			if (InteractInfoWidget)
+			{
+				InteractInfoWidget->SetVisible(false);
+			}
 		}
 		else
 		{
@@ -821,10 +845,40 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 			{
 				InteractHighlightWidget->SetHighlightRect(TL, BR);
 				InteractHighlightWidget->SetVisible(true);
+
+				// Update interact info widget if we're looking at an item pickup
+				if (InteractInfoWidget)
+				{
+					AActor* HitActor = Hit.GetActor();
+					AItemPickup* ItemPickup = Cast<AItemPickup>(HitActor);
+					
+					if (ItemPickup && ItemPickup->GetItemDef())
+					{
+						// Set the item data
+						InteractInfoWidget->SetInteractableItem(ItemPickup);
+						
+						// Get key names and set them
+						FString InteractKeyName = GetKeyDisplayName(InteractAction);
+						FString PickupKeyName = GetKeyDisplayName(PickupAction);
+						InteractInfoWidget->SetKeybindings(InteractKeyName, PickupKeyName);
+						
+						// Set position and visibility
+						InteractInfoWidget->SetPosition(TL, BR);
+						InteractInfoWidget->SetVisible(true);
+					}
+					else
+					{
+						InteractInfoWidget->SetVisible(false);
+					}
+				}
 			}
 			else
 			{
 				InteractHighlightWidget->SetVisible(false);
+				if (InteractInfoWidget)
+				{
+					InteractInfoWidget->SetVisible(false);
+				}
 			}
 		}
 	}
@@ -1534,6 +1588,30 @@ void AFirstPersonPlayerController::OnPickup(const FInputActionValue& Value)
 {
 	// This should not be called anymore, but redirect to pressed handler for safety
 	OnPickupPressed(Value);
+}
+
+FString AFirstPersonPlayerController::GetKeyDisplayName(UInputAction* Action) const
+{
+	if (!Action || !DefaultMappingContext)
+	{
+		return FString();
+	}
+
+	// Query the mapping context for mappings to this action
+	const TArray<FEnhancedActionKeyMapping>& Mappings = DefaultMappingContext->GetMappings();
+	for (const auto& Mapping : Mappings)
+	{
+		if (Mapping.Action == Action)
+		{
+			// Get the first key from the mapping
+			if (Mapping.Key.IsValid())
+			{
+				return Mapping.Key.GetDisplayName().ToString();
+			}
+		}
+	}
+
+	return FString();
 }
 
 void AFirstPersonPlayerController::OnSpawnItem(const FInputActionValue& Value)

@@ -11,6 +11,7 @@ class UInventoryScreenWidget;
 class UStorageWindowWidget;
 class UStatBarWidget;
 class UItemDefinition;
+class UInteractInfoWidget;
 
 #include "FirstPersonPlayerController.generated.h"
 
@@ -88,6 +89,9 @@ protected:
 	// Ensure mapping context and actions exist and have keys mapped
 	void InitializeInputAssetsIfNeeded();
 
+	// Helper to get key display name from InputAction
+	FString GetKeyDisplayName(class UInputAction* Action) const;
+
  // UI toggles
 	UFUNCTION()
 	void ToggleInventory();
@@ -129,6 +133,10 @@ protected:
     // UI: highlight widget that draws a 2D border around current interactable
     UPROPERTY()
     TObjectPtr<class UInteractHighlightWidget> InteractHighlightWidget;
+
+    // UI: info widget that displays contextual information about interactables
+    UPROPERTY()
+    TObjectPtr<UInteractInfoWidget> InteractInfoWidget;
 
     // UI: always-on hotbar widget (left side)
     UPROPERTY()
