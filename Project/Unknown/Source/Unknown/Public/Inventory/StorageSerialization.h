@@ -8,6 +8,7 @@ class UItemDefinition;
 
 /**
  * Helper functions for serializing storage component data to/from ItemEntry CustomData
+ * POSSIBLY NOT CURRENTLY WORKING
  */
 namespace StorageSerialization
 {

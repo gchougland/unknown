@@ -972,16 +972,96 @@ void AFirstPersonPlayerController::OnThrow(const FInputActionValue& Value)
 	{
 		return;
 	}
-	if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
+	
+	AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn());
+	if (!C)
 	{
-		if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
+		return;
+	}
+
+	// Check if Shift is held and player is holding an item - if so, try to store in container
+	const bool bShiftHeld = IsInputKeyDown(EKeys::LeftShift);
+	const bool bHoldingItem = C->IsHoldingItem();
+	
+	if (bShiftHeld && bHoldingItem)
+	{
+		// Perform line trace to find interactables with storage components
+		FVector CamLoc; FRotator CamRot;
+		GetPlayerViewPoint(CamLoc, CamRot);
+		const FVector Dir = CamRot.Vector();
+		const float MaxDist = 300.f; // Match interactable detection range
+		const FVector Start = CamLoc;
+		const FVector End = Start + Dir * MaxDist;
+
+		FHitResult Hit;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(StoreItem), false);
+		Params.AddIgnoredActor(C);
+		// Note: Held item actor is attached to character and has collision disabled, so it's naturally ignored
+
+		if (GetWorld() && GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
 		{
-			const FVector Dir = GetControlRotation().Vector();
-			PIC->Throw(Dir);
-			// Clear rotate state on throw to restore camera look immediately
-			bRotateHeld = false;
-			PIC->SetRotateHeld(false);
+			AActor* HitActor = Hit.GetActor();
+			if (HitActor)
+			{
+				// Check if the hit actor has a storage component
+				UStorageComponent* StorageComp = HitActor->FindComponentByClass<UStorageComponent>();
+				if (StorageComp)
+				{
+					// Get the held item entry
+					FItemEntry HeldEntry = C->GetHeldItemEntry();
+					if (HeldEntry.IsValid() && HeldEntry.Def)
+					{
+						// Check if item can be stored
+						if (!HeldEntry.Def->bCanBeStored)
+						{
+							// Item cannot be stored
+							if (UMessageLogSubsystem* MsgLog = GEngine ? GEngine->GetEngineSubsystem<UMessageLogSubsystem>() : nullptr)
+							{
+								MsgLog->PushMessage(FText::FromString(FString::Printf(TEXT("%s cannot be stored"), *HeldEntry.Def->DisplayName.ToString())));
+							}
+							UE_LOG(LogTemp, Display, TEXT("[StoreItem] Item %s cannot be stored (bCanBeStored is false)"), *GetNameSafe(HeldEntry.Def));
+							return; // Don't throw, just return
+						}
+
+						// Attempt to store the item
+						if (StorageComp->TryAdd(HeldEntry))
+						{
+							// Success - remove item from held state
+							UE_LOG(LogTemp, Display, TEXT("[StoreItem] Successfully stored %s in container"), *GetNameSafe(HeldEntry.Def));
+							C->ReleaseHeldItem(false); // Don't try to put back, it's already stored
+							
+							// Refresh UI if inventory is open
+							if (InventoryScreen && InventoryScreen->IsOpen())
+							{
+								InventoryScreen->RefreshInventoryView();
+							}
+							return; // Success - don't throw
+						}
+						else
+						{
+							// Storage is full or failed
+							if (UMessageLogSubsystem* MsgLog = GEngine ? GEngine->GetEngineSubsystem<UMessageLogSubsystem>() : nullptr)
+							{
+								MsgLog->PushMessage(FText::FromString(TEXT("Storage full")));
+							}
+							UE_LOG(LogTemp, Display, TEXT("[StoreItem] Failed to store %s - storage full or invalid"), *GetNameSafe(HeldEntry.Def));
+							return; // Don't throw, just return
+						}
+					}
+				}
+			}
 		}
+		// If we get here, Shift was held but no valid storage was found - fall through to throw behavior
+	}
+
+	// Normal throw behavior (either Shift not held, or no storage found)
+	if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
+	{
+		const FVector Dir = GetControlRotation().Vector();
+		PIC->Throw(Dir);
+		// Clear rotate state on throw to restore camera look immediately
+		bRotateHeld = false;
+		PIC->SetRotateHeld(false);
 	}
 }
 
