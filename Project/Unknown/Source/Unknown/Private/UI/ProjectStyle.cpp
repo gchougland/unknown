@@ -48,6 +48,17 @@ namespace ProjectStyle
         return Info;
     }
 
+    FSlateFontInfo GetMonoFontBold(int32 Size)
+    {
+        UObject* FontObj = LoadFontObject();
+        FSlateFontInfo Info;
+        Info.Size = Size;
+        Info.FontObject = FontObj;
+        // Specify the Bold typeface from the composite font
+        Info.TypefaceFontName = FName(TEXT("Bold"));
+        return Info;
+    }
+
     // Terminal color constants
     FLinearColor GetTerminalWhite()
     {

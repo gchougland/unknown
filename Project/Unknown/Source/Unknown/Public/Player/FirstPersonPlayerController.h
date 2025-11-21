@@ -9,6 +9,7 @@ struct FInputActionValue;
 class UHotbarWidget;
 class UInventoryScreenWidget;
 class UStorageWindowWidget;
+class UStatBarWidget;
 class UItemDefinition;
 
 #include "FirstPersonPlayerController.generated.h"
@@ -144,6 +145,10 @@ protected:
     // UI: progress bar for hold-to-drop
     UPROPERTY()
     TObjectPtr<class UDropProgressBarWidget> DropProgressBarWidget;
+
+    // UI: hunger bar widget (below hotbar)
+    UPROPERTY()
+    TObjectPtr<UStatBarWidget> HungerBarWidget;
 
     // Cached UI-open state used to quickly gate inputs without dereferencing widgets
     bool bInventoryUIOpen = false;

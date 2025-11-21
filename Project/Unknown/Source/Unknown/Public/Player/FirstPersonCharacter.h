@@ -13,6 +13,7 @@ class UHotbarComponent;
 class USceneComponent;
 class AItemPickup;
 class UEquipmentComponent;
+class UHungerComponent;
 
 #include "FirstPersonCharacter.generated.h"
 
@@ -101,6 +102,9 @@ public:
  UFUNCTION(BlueprintPure, Category="Inventory")
  UEquipmentComponent* GetEquipment() const { return Equipment; }
 
+ UFUNCTION(BlueprintPure, Category="Stats")
+ UHungerComponent* GetHunger() const { return Hunger; }
+
 	// Selects a hotbar slot [0..8] and updates held item from inventory
 	UFUNCTION(BlueprintCallable, Category="Inventory")
 	bool SelectHotbarSlot(int32 Index);
@@ -131,6 +135,13 @@ public:
 	UFUNCTION(BlueprintPure, Category="Inventory")
 	FItemEntry GetHeldItemEntry() const;
 
+	// Update the held item entry (e.g., after use action modifies it)
+	UFUNCTION(BlueprintCallable, Category="Inventory")
+	void UpdateHeldItemEntry(const FItemEntry& UpdatedEntry);
+
+	// Get the held item actor (for use actions that need to update it)
+	AItemPickup* GetHeldItemActor() const { return HeldItemActor; }
+
 protected:
  // Currently held item actor (spawned and attached to socket)
  UPROPERTY(Transient)
@@ -155,6 +166,10 @@ protected:
     // Equipment component (manages equipping and effects)
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Inventory", meta=(AllowPrivateAccess="true"))
     TObjectPtr<UEquipmentComponent> Equipment;
+
+    // Hunger component (tracks hunger level and decay)
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Stats", meta=(AllowPrivateAccess="true"))
+    TObjectPtr<UHungerComponent> Hunger;
     
 private:
     // Helper to refresh UI if inventory screen is open

@@ -9,7 +9,7 @@
 #include "CollisionQueryParams.h"
 #include "Engine/OverlapResult.h"
 
-bool UUseAction_OpenStorage::Execute_Implementation(ACharacter* User, FItemEntry& Item)
+bool UUseAction_OpenStorage::Execute_Implementation(ACharacter* User, FItemEntry& Item, AItemPickup* WorldPickup)
 {
 	if (!User || !Item.IsValid() || !Item.Def)
 	{

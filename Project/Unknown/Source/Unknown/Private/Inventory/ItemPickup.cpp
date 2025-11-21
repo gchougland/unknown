@@ -3,6 +3,7 @@
 #include "UObject/ConstructorHelpers.h"
 #include "Inventory/ItemDefinition.h"
 #include "Inventory/ItemTypes.h"
+#include "Inventory/FoodItemData.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
@@ -42,13 +43,38 @@ void AItemPickup::ApplyVisualsFromDef()
     {
         return;
     }
- // Mesh
- UStaticMesh* NewMesh = (ItemDef ? ItemDef->PickupMesh : nullptr);
- Mesh->SetStaticMesh(NewMesh);
- // IMPORTANT: Do not change the component's world scale here. The actor's world
- // transform (including scale) may be intentionally set by drop/placer logic
- // via UItemDefinition::DefaultDropTransform. Keeping the mesh relative scale
- // at its default (1,1,1) ensures the actor's scale propagates correctly.
+    
+    // Determine which mesh to use
+    UStaticMesh* NewMesh = nullptr;
+    
+    if (ItemDef)
+    {
+        // Check if this is a food item with uses remaining
+        if (ItemDef->FoodData && CustomData.Contains(TEXT("UsesRemaining")))
+        {
+            const FString* UsesStr = CustomData.Find(TEXT("UsesRemaining"));
+            if (UsesStr)
+            {
+                int32 UsesRemaining = FCString::Atoi(**UsesStr);
+                // Get mesh variant based on uses remaining
+                NewMesh = ItemDef->FoodData->GetMeshForUsesRemaining(UsesRemaining);
+            }
+        }
+        
+        // Fall back to default pickup mesh if no variant was found
+        if (!NewMesh)
+        {
+            NewMesh = ItemDef->PickupMesh;
+        }
+    }
+    
+    Mesh->SetStaticMesh(NewMesh);
+    
+    // IMPORTANT: Do not change the component's world scale here. The actor's world
+    // transform (including scale) may be intentionally set by drop/placer logic
+    // via UItemDefinition::DefaultDropTransform. Keeping the mesh relative scale
+    // at its default (1,1,1) ensures the actor's scale propagates correctly.
+    
     // Physics mass
     if (ItemDef)
     {

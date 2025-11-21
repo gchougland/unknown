@@ -7,6 +7,7 @@
 #include "Inventory/HotbarComponent.h"
 #include "Inventory/EquipmentComponent.h"
 #include "Inventory/ItemPickup.h"
+#include "Player/HungerComponent.h"
 #include "Inventory/ItemTypes.h"
 #include "Inventory/ItemDefinition.h"
 #include "Inventory/StorageComponent.h"
@@ -74,6 +75,9 @@ AFirstPersonCharacter::AFirstPersonCharacter(const FObjectInitializer& ObjectIni
 
  // Create equipment component and link to inventory in BeginPlay
  Equipment = CreateDefaultSubobject<UEquipmentComponent>(TEXT("Equipment"));
+
+ // Create hunger component
+ Hunger = CreateDefaultSubobject<UHungerComponent>(TEXT("Hunger"));
 
  bUseControllerRotationYaw = true; // typical for FPS
 }
@@ -768,6 +772,20 @@ void AFirstPersonCharacter::RefreshUIIfInventoryOpen()
 FItemEntry AFirstPersonCharacter::GetHeldItemEntry() const
 {
 	return HeldItemEntry;
+}
+
+void AFirstPersonCharacter::UpdateHeldItemEntry(const FItemEntry& UpdatedEntry)
+{
+	if (!HeldItemActor)
+	{
+		return;
+	}
+
+	// Update the stored entry
+	HeldItemEntry = UpdatedEntry;
+
+	// Update the actor's item entry (this will also update the mesh if needed)
+	HeldItemActor->SetItemEntry(UpdatedEntry);
 }
 
 void AFirstPersonCharacter::OnInventoryItemRemoved(const FGuid& RemovedItemId)

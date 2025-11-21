@@ -13,7 +13,9 @@
 #include "UI/InteractHighlightWidget.h"
 #include "UI/HotbarWidget.h"
 #include "UI/DropProgressBarWidget.h"
+#include "UI/StatBarWidget.h"
 #include "UI/InventoryScreenWidget.h"
+#include "Player/HungerComponent.h"
 #include "UI/StorageWindowWidget.h"
 #include "UI/StorageListWidget.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
@@ -253,6 +255,28 @@ void AFirstPersonPlayerController::BeginPlay()
 			DropProgressBarWidget->SetAlignmentInViewport(FVector2D(0.f, 0.f));
 			DropProgressBarWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
 			DropProgressBarWidget->SetVisible(false);
+		}
+	}
+
+	// Create and add the hunger bar widget (below hotbar, left side)
+	if (!HungerBarWidget)
+	{
+		HungerBarWidget = CreateWidget<UStatBarWidget>(this, UStatBarWidget::StaticClass());
+		if (HungerBarWidget)
+		{
+			HungerBarWidget->SetOwningPlayer(this);
+			HungerBarWidget->AddToPlayerScreen(500);
+			HungerBarWidget->SetVisibility(ESlateVisibility::Visible);
+			HungerBarWidget->SetRenderOpacity(1.f);
+			HungerBarWidget->SetAnchorsInViewport(FAnchors(0.f, 0.f, 0.f, 0.f));
+			HungerBarWidget->SetAlignmentInViewport(FVector2D(0.f, 0.f));
+			// Position below hotbar: hotbar is at Y=50 with height 648, so hunger bar at Y=50+648+20=718
+			HungerBarWidget->SetPositionInViewport(FVector2D(0.f, 718.f), false);
+			HungerBarWidget->SetDesiredSizeInViewport(FVector2D(120.f, 24.f)); // Width matches hotbar, height for taller bar
+			
+			// Configure hunger bar appearance
+			HungerBarWidget->SetLabel(TEXT("HGR"));
+			HungerBarWidget->SetFillColor(FLinearColor(0.8f, 0.2f, 0.2f, 1.0f)); // Red
 		}
 	}
 
@@ -660,7 +684,8 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 						UItemUseAction* UseAction = NewObject<UItemUseAction>(this, PickupEntry.Def->DefaultUseAction);
 						if (UseAction)
 						{
-							if (UseAction->Execute(C, PickupEntry))
+							// Pass the pickup actor so the use action can update/replace it in the world
+							if (UseAction->Execute(C, PickupEntry, TargetPickup))
 							{
 								UE_LOG(LogTemp, Display, TEXT("[Interact] Used %s"), *GetNameSafe(PickupEntry.Def));
 								// Use action succeeded - item may have been consumed or modified
@@ -803,6 +828,20 @@ void AFirstPersonPlayerController::PlayerTick(float DeltaTime)
 			}
 		}
 	}
+
+	// Update hunger bar widget
+	if (HungerBarWidget)
+	{
+		if (AFirstPersonCharacter* Char = Cast<AFirstPersonCharacter>(GetPawn()))
+		{
+			if (UHungerComponent* HungerComp = Char->GetHunger())
+			{
+				const float CurrentHunger = HungerComp->GetCurrentHunger();
+				const float MaxHunger = HungerComp->GetMaxHunger();
+				HungerBarWidget->SetValue(CurrentHunger, MaxHunger);
+			}
+		}
+	}
 }
 
 void AFirstPersonPlayerController::OnInteractPressed(const FInputActionValue& Value)
@@ -940,12 +979,51 @@ void AFirstPersonPlayerController::OnRotateHeldPressed(const FInputActionValue& 
 	{
 		return;
 	}
-	bRotateHeld = true;
+	
 	if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
 	{
+		// Priority 1: Check if physics object is being held -> rotate it
 		if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
 		{
-			PIC->SetRotateHeld(true);
+			if (PIC->IsHolding())
+			{
+				bRotateHeld = true;
+				PIC->SetRotateHeld(true);
+				return;
+			}
+		}
+		
+		// Priority 2: Check if item is being held -> use it
+		if (C->IsHoldingItem())
+		{
+			FItemEntry HeldEntry = C->GetHeldItemEntry();
+			if (HeldEntry.IsValid() && HeldEntry.Def && HeldEntry.Def->DefaultUseAction)
+			{
+				// Create use action instance and execute it
+				UItemUseAction* UseAction = NewObject<UItemUseAction>(this, HeldEntry.Def->DefaultUseAction);
+				if (UseAction)
+				{
+					// Pass nullptr for WorldPickup since this is a held item (not a world pickup)
+					if (UseAction->Execute(C, HeldEntry, nullptr))
+					{
+						UE_LOG(LogTemp, Display, TEXT("[UseHeldItem] Used %s"), *GetNameSafe(HeldEntry.Def));
+						
+						// Update the held item entry and actor with the modified data
+						// (Execute modifies HeldEntry by reference, so we need to sync it back)
+						C->UpdateHeldItemEntry(HeldEntry);
+						
+						// Refresh inventory UI if open
+						if (InventoryScreen && InventoryScreen->IsOpen())
+						{
+							InventoryScreen->RefreshInventoryView();
+						}
+					}
+					else
+					{
+						UE_LOG(LogTemp, Display, TEXT("[UseHeldItem] Use action failed for %s"), *GetNameSafe(HeldEntry.Def));
+					}
+				}
+			}
 		}
 	}
 }
@@ -956,12 +1034,17 @@ void AFirstPersonPlayerController::OnRotateHeldReleased(const FInputActionValue&
 	{
 		return;
 	}
+	
+	// Only disable rotation if physics object is being held
 	bRotateHeld = false;
 	if (AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(GetPawn()))
 	{
 		if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
 		{
-			PIC->SetRotateHeld(false);
+			if (PIC->IsHolding())
+			{
+				PIC->SetRotateHeld(false);
+			}
 		}
 	}
 }

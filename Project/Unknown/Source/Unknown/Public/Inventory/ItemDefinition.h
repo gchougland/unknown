@@ -10,6 +10,7 @@ class UItemUseAction;
 class UStaticMesh;
 class UBlueprint;
 class UItemEquipEffect;
+class UFoodItemData;
 class AActor;
 
 #include "ItemDefinition.generated.h"
@@ -95,4 +96,8 @@ public:
     // Optional blueprint override for spawning instead of AItemPickup (must inherit from AItemPickup or implement compatible interface)
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Item|Rules")
     TSubclassOf<AActor> PickupActorClass;
+
+    // Food metadata
+    UPROPERTY(EditDefaultsOnly, Instanced, BlueprintReadOnly, Category="Item|Food")
+    TObjectPtr<UFoodItemData> FoodData;
 };

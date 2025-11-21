@@ -5,6 +5,7 @@
 #include "ItemUseAction.generated.h"
 
 class ACharacter;
+class AItemPickup;
 struct FItemEntry;
 
 UCLASS(Abstract, Blueprintable, EditInlineNew, DefaultToInstanced)
@@ -13,6 +14,6 @@ class UNKNOWN_API UItemUseAction : public UObject
 	GENERATED_BODY()
 public:
 	UFUNCTION(BlueprintNativeEvent, Category="Item")
-	bool Execute(ACharacter* User, UPARAM(ref) FItemEntry& Item);
-	virtual bool Execute_Implementation(ACharacter* User, FItemEntry& Item) { return false; }
+	bool Execute(ACharacter* User, UPARAM(ref) FItemEntry& Item, AItemPickup* WorldPickup = nullptr);
+	virtual bool Execute_Implementation(ACharacter* User, FItemEntry& Item, AItemPickup* WorldPickup = nullptr) { return false; }
 };

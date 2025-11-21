@@ -14,6 +14,6 @@ class UNKNOWN_API UUseAction_OpenStorage : public UItemUseAction
 	GENERATED_BODY()
 
 public:
-	virtual bool Execute_Implementation(ACharacter* User, UPARAM(ref) FItemEntry& Item) override;
+	virtual bool Execute_Implementation(ACharacter* User, UPARAM(ref) FItemEntry& Item, AItemPickup* WorldPickup = nullptr) override;
 };
 
