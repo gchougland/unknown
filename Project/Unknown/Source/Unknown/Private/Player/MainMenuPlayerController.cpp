@@ -18,9 +18,32 @@ void AMainMenuPlayerController::BeginPlay()
 	if (!MainMenuWidget)
 	{
 		MainMenuWidget = CreateWidget<UMainMenuWidget>(this, UMainMenuWidget::StaticClass());
-		if (MainMenuWidget)
+	}
+	
+	// Re-create widget if it was destroyed (e.g., after level transition)
+	if (MainMenuWidget)
+	{
+		if (!MainMenuWidget->IsInViewport())
 		{
 			MainMenuWidget->AddToViewport();
+		}
+		
+		// Always re-apply anchors and position AFTER AddToViewport
+		// This ensures correct positioning both on initial creation and after returning from level
+		// Use a timer to set on next frame to ensure viewport is fully initialized
+		if (UWorld* World = GetWorld())
+		{
+			FTimerHandle TimerHandle;
+			World->GetTimerManager().SetTimerForNextTick([this]()
+			{
+				if (MainMenuWidget && MainMenuWidget->IsInViewport())
+				{
+					MainMenuWidget->ReapplyPositionAndAnchors();
+					// Set keyboard focus after positioning
+					MainMenuWidget->SetIsFocusable(true);
+					MainMenuWidget->SetKeyboardFocus();
+				}
+			});
 		}
 	}
 }

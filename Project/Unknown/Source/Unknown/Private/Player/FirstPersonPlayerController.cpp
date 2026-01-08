@@ -9,12 +9,18 @@
 #include "InputAction.h"
 #include "InputMappingContext.h"
 #include "UI/HotbarWidget.h"
+#include "Save/SaveSystemSubsystem.h"
+#include "Save/GameSaveData.h"
 
 // Include helper module implementations (must be before first use)
 #include "FirstPersonPlayerControllerInputSetup.cpp"
 #include "FirstPersonPlayerControllerUI.cpp"
 #include "FirstPersonPlayerControllerInteraction.cpp"
 #include "FirstPersonPlayerControllerTick.cpp"
+#include "UI/PauseMenuWidget.h"
+#include "Kismet/GameplayStatics.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 
 AFirstPersonPlayerController::AFirstPersonPlayerController(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -52,6 +58,63 @@ void AFirstPersonPlayerController::BeginPlay()
 	FInputModeGameOnly Mode;
 	SetInputMode(Mode);
 	bShowMouseCursor = false;
+	
+	// Check for pending new game save (if we just loaded MainMap from main menu)
+	if (UWorld* World = GetWorld())
+	{
+		if (UGameInstance* GameInstance = World->GetGameInstance())
+		{
+			if (USaveSystemSubsystem* SaveSystem = GameInstance->GetSubsystem<USaveSystemSubsystem>())
+			{
+				// Check after a short delay to ensure level is fully loaded
+				FTimerHandle TimerHandle;
+				World->GetTimerManager().SetTimer(TimerHandle, [SaveSystem]()
+				{
+					SaveSystem->CheckAndCreatePendingNewGameSave();
+				}, 0.5f, false);
+			}
+		}
+	}
+	
+	// Check for position restore after level load
+	// This happens when loading a save that required a level transition
+	RestorePlayerPositionAfterLevelLoad();
+}
+
+void AFirstPersonPlayerController::RestorePlayerPositionAfterLevelLoad()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// Check if there's a temp save with position data
+	FString TempSlotName = TEXT("_TEMP_RESTORE_POSITION_");
+	if (UGameSaveData* TempSave = Cast<UGameSaveData>(UGameplayStatics::LoadGameFromSlot(TempSlotName, 0)))
+	{
+		// Wait a bit for the player to fully spawn
+		FTimerHandle RestoreTimer;
+		World->GetTimerManager().SetTimer(RestoreTimer, [this, World, TempSlotName]()
+		{
+			// Load the temporary save to restore position
+			if (UGameSaveData* TempSave = Cast<UGameSaveData>(UGameplayStatics::LoadGameFromSlot(TempSlotName, 0)))
+			{
+				if (APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(World, 0))
+				{
+					if (AFirstPersonCharacter* PlayerCharacter = Cast<AFirstPersonCharacter>(PlayerPawn))
+					{
+						PlayerCharacter->SetActorLocation(TempSave->PlayerLocation);
+						PlayerCharacter->SetActorRotation(TempSave->PlayerRotation);
+						UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Restored player position after level load"));
+						
+						// Clean up temp save
+						UGameplayStatics::DeleteGameInSlot(TempSlotName, 0);
+					}
+				}
+			}
+		}, 0.2f, false); // 0.2 second delay to ensure player is fully spawned
+	}
 }
 
 void AFirstPersonPlayerController::SetupInputComponent()
@@ -320,4 +383,64 @@ void AFirstPersonPlayerController::OnSpawnItem(const FInputActionValue& Value)
 float AFirstPersonPlayerController::ClampPitchDegrees(float Degrees)
 {
 	return FMath::Clamp(Degrees, -89.f, 89.f);
+}
+
+void AFirstPersonPlayerController::OnPausePressed(const FInputActionValue& Value)
+{
+	// Don't pause if inventory is open
+	if (bInventoryUIOpen)
+	{
+		return;
+	}
+
+	if (!PauseMenuWidget)
+	{
+		return;
+	}
+
+	// Use actual game pause state as source of truth
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	
+	bool bGameIsPaused = World->IsPaused();
+
+	// Check if we just unpaused to prevent buffered input from immediately re-pausing
+	// This check applies to both pausing and unpausing
+	if (bIsUnpausing)
+	{
+		// Ignore this input - it's likely buffered from the unpause
+		return;
+	}
+
+	if (bGameIsPaused)
+	{
+		// Game is paused - Enhanced Input might not fire reliably when paused,
+		// but if it does, forward to the widget which handles Escape key directly
+		// The widget's NativeOnKeyDown will handle unpausing
+		// For now, just call Hide() - the widget should handle keyboard focus
+		PauseMenuWidget->Hide();
+		UE_LOG(LogTemp, Display, TEXT("[PC] Pause menu closed via Enhanced Input"));
+	}
+	else
+	{
+		// Game is not paused - user wants to pause
+		
+		// Show pause menu
+		PauseMenuWidget->Show();
+		
+		// Set input mode to UI only
+		FInputModeUIOnly InputMode;
+		InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+		SetInputMode(InputMode);
+		bShowMouseCursor = true;
+		
+		// Pause the game
+		SetPause(true);
+		bIsPaused = true;
+		
+		UE_LOG(LogTemp, Display, TEXT("[PC] Pause menu opened"));
+	}
 }

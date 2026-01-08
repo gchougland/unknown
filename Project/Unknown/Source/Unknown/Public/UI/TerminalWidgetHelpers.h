@@ -11,6 +11,9 @@ class USizeBox;
 class UHorizontalBox;
 class UVerticalBox;
 class UImage;
+class UScrollBox;
+class UEditableTextBox;
+class UWidget;
 
 namespace TerminalWidgetHelpers
 {
@@ -66,5 +69,55 @@ namespace TerminalWidgetHelpers
         const FLinearColor& BackgroundColor,
         const FLinearColor& TextColor
     );
+
+    // Creates a terminal-styled scroll box with black background and white border
+    // WidgetTree: The widget tree to construct widgets in
+    // OuterPadding: Padding for the outer border (default 2px)
+    // InnerPadding: Padding for the inner background (default 8px)
+    // Name: Optional name for the scroll box widget
+    // Returns: The scroll box widget wrapped in terminal-styled border panel
+    UNKNOWN_API UScrollBox* CreateTerminalScrollBox(
+        UWidgetTree* WidgetTree,
+        const FMargin& OuterPadding = FMargin(2.f),
+        const FMargin& InnerPadding = FMargin(8.f),
+        const FName& Name = NAME_None
+    );
+
+    // Creates a terminal-styled text input field
+    // WidgetTree: The widget tree to construct widgets in
+    // PlaceholderText: Placeholder text to display when empty
+    // FontSize: Font size for the mono font (default 18)
+    // Width: Optional width override
+    // Height: Optional height override
+    // Name: Optional name for the text box widget
+    // Returns: The editable text box widget with terminal styling
+    UNKNOWN_API UEditableTextBox* CreateTerminalEditableTextBox(
+        UWidgetTree* WidgetTree,
+        const FString& PlaceholderText = TEXT(""),
+        int32 FontSize = 18,
+        float Width = 0.f,
+        float Height = 0.f,
+        const FName& Name = NAME_None
+    );
+
+    // Creates a terminal-styled modal dialog frame structure
+    // WidgetTree: The widget tree to construct widgets in
+    // Content: Widget to wrap in the dialog frame
+    // Width: Optional width for the dialog (0 = auto)
+    // Height: Optional height for the dialog (0 = auto)
+    // OuterPadding: Padding for the outer border (default 2px)
+    // InnerPadding: Padding for the inner background (default 16px)
+    // Name: Optional name for the dialog widget
+    // Returns: The outer border widget (inner border is set as its content)
+    UNKNOWN_API UBorder* CreateTerminalModalDialog(
+        UWidgetTree* WidgetTree,
+        UWidget* Content,
+        float Width = 0.f,
+        float Height = 0.f,
+        const FMargin& OuterPadding = FMargin(2.f),
+        const FMargin& InnerPadding = FMargin(16.f),
+        const FName& Name = NAME_None
+    );
+
 }
 

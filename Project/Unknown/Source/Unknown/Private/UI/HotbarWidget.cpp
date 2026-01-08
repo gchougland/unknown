@@ -282,7 +282,6 @@ void UHotbarWidget::UpdateSlotQuantity(int32 Index)
         // Empty slot: ensure quantity hidden
         Label->SetText(FText::GetEmpty());
         Label->SetVisibility(ESlateVisibility::Hidden);
-        UE_LOG(LogTemp, Display, TEXT("[HotbarWidget] No type for slot %d -> hide qty"), Index);
     }
 }
 

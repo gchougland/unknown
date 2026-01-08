@@ -7,7 +7,10 @@
 #include "Components/SizeBox.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
+#include "Components/ScrollBox.h"
+#include "Components/EditableTextBox.h"
 #include "Styling/SlateBrush.h"
+#include "Styling/SlateTypes.h"
 
 namespace TerminalWidgetHelpers
 {
@@ -127,6 +130,205 @@ namespace TerminalWidgetHelpers
         CellBorder->SetContent(Size);
 
         return CellBorder;
+    }
+
+    UScrollBox* CreateTerminalScrollBox(
+        UWidgetTree* WidgetTree,
+        const FMargin& OuterPadding,
+        const FMargin& InnerPadding,
+        const FName& Name)
+    {
+        if (!WidgetTree)
+        {
+            return nullptr;
+        }
+
+        // Create scroll box first
+        UScrollBox* ScrollBox = WidgetTree->ConstructWidget<UScrollBox>(UScrollBox::StaticClass(), Name);
+        if (!ScrollBox)
+        {
+            return nullptr;
+        }
+
+        // Create terminal-styled border panel to wrap the scroll box
+        UBorder* OuterBorder = CreateTerminalBorderedPanel(
+            WidgetTree,
+            ProjectStyle::GetTerminalWhite(),
+            ProjectStyle::GetTerminalBlack(),
+            OuterPadding,
+            InnerPadding,
+            Name.IsNone() ? FName(TEXT("ScrollBoxOuter")) : FName(*(Name.ToString() + TEXT("_Outer"))),
+            Name.IsNone() ? FName(TEXT("ScrollBoxInner")) : FName(*(Name.ToString() + TEXT("_Inner")))
+        );
+
+        if (OuterBorder)
+        {
+            // Get the inner border from the panel and set scroll box as content
+            UBorder* InnerBorder = Cast<UBorder>(OuterBorder->GetContent());
+            if (InnerBorder)
+            {
+                InnerBorder->SetContent(ScrollBox);
+            }
+        }
+
+        return ScrollBox;
+    }
+
+    UEditableTextBox* CreateTerminalEditableTextBox(
+        UWidgetTree* WidgetTree,
+        const FString& PlaceholderText,
+        int32 FontSize,
+        float Width,
+        float Height,
+        const FName& Name)
+    {
+        if (!WidgetTree)
+        {
+            return nullptr;
+        }
+
+        // Create terminal-styled border panel for the text box
+        UBorder* OuterBorder = CreateTerminalBorderedPanel(
+            WidgetTree,
+            ProjectStyle::GetTerminalWhite(),
+            ProjectStyle::GetTerminalBlack(),
+            FMargin(2.f),
+            FMargin(8.f, 4.f),
+            Name.IsNone() ? FName(TEXT("TextBoxOuter")) : FName(*(Name.ToString() + TEXT("_Outer"))),
+            Name.IsNone() ? FName(TEXT("TextBoxInner")) : FName(*(Name.ToString() + TEXT("_Inner")))
+        );
+
+        if (!OuterBorder)
+        {
+            return nullptr;
+        }
+
+        // Create editable text box
+        UEditableTextBox* TextBox = WidgetTree->ConstructWidget<UEditableTextBox>(UEditableTextBox::StaticClass(), Name);
+        if (TextBox)
+        {
+            // Set terminal styling
+            FEditableTextBoxStyle TextBoxStyle;
+            FSlateBrush NormalBrush;
+            NormalBrush.DrawAs = ESlateBrushDrawType::Box;
+            NormalBrush.TintColor = ProjectStyle::GetTerminalBlack();
+            NormalBrush.Margin = FMargin(0.f);
+            TextBoxStyle.BackgroundImageNormal = NormalBrush;
+            TextBoxStyle.BackgroundImageHovered = NormalBrush;
+            TextBoxStyle.BackgroundImageFocused = NormalBrush;
+            TextBoxStyle.BackgroundImageReadOnly = NormalBrush;
+
+            TextBoxStyle.TextStyle.SetFont(ProjectStyle::GetMonoFont(FontSize));
+            TextBoxStyle.TextStyle.SetColorAndOpacity(ProjectStyle::GetTerminalWhite());
+            TextBoxStyle.Padding = FMargin(4.f, 2.f);
+
+            // Set style and hint text using properties
+            TextBox->WidgetStyle = TextBoxStyle;
+            TextBox->SetHintText(FText::FromString(PlaceholderText));
+
+            // Set size if specified
+            if (Width > 0.f || Height > 0.f)
+            {
+                USizeBox* SizeBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
+                if (SizeBox)
+                {
+                    if (Width > 0.f)
+                    {
+                        SizeBox->SetWidthOverride(Width);
+                    }
+                    if (Height > 0.f)
+                    {
+                        SizeBox->SetHeightOverride(Height);
+                    }
+                    SizeBox->SetContent(TextBox);
+
+                    // Get the inner border from the panel
+                    UBorder* InnerBorder = Cast<UBorder>(OuterBorder->GetContent());
+                    if (InnerBorder)
+                    {
+                        InnerBorder->SetContent(SizeBox);
+                    }
+                }
+            }
+            else
+            {
+                // Get the inner border from the panel
+                UBorder* InnerBorder = Cast<UBorder>(OuterBorder->GetContent());
+                if (InnerBorder)
+                {
+                    InnerBorder->SetContent(TextBox);
+                }
+            }
+        }
+
+        return TextBox;
+    }
+
+    UBorder* CreateTerminalModalDialog(
+        UWidgetTree* WidgetTree,
+        UWidget* Content,
+        float Width,
+        float Height,
+        const FMargin& OuterPadding,
+        const FMargin& InnerPadding,
+        const FName& Name)
+    {
+        if (!WidgetTree || !Content)
+        {
+            return nullptr;
+        }
+
+        // Create terminal-styled border panel
+        UBorder* OuterBorder = CreateTerminalBorderedPanel(
+            WidgetTree,
+            ProjectStyle::GetTerminalWhite(),
+            ProjectStyle::GetTerminalBlack(),
+            OuterPadding,
+            InnerPadding,
+            Name.IsNone() ? FName(TEXT("ModalDialogOuter")) : FName(*(Name.ToString() + TEXT("_Outer"))),
+            Name.IsNone() ? FName(TEXT("ModalDialogInner")) : FName(*(Name.ToString() + TEXT("_Inner")))
+        );
+
+        if (!OuterBorder)
+        {
+            return nullptr;
+        }
+
+        // Wrap content in size box if dimensions specified
+        if (Width > 0.f || Height > 0.f)
+        {
+            USizeBox* SizeBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
+            if (SizeBox)
+            {
+                if (Width > 0.f)
+                {
+                    SizeBox->SetWidthOverride(Width);
+                }
+                if (Height > 0.f)
+                {
+                    SizeBox->SetHeightOverride(Height);
+                }
+                SizeBox->SetContent(Content);
+
+                // Get the inner border from the panel
+                UBorder* InnerBorder = Cast<UBorder>(OuterBorder->GetContent());
+                if (InnerBorder)
+                {
+                    InnerBorder->SetContent(SizeBox);
+                }
+            }
+        }
+        else
+        {
+            // Get the inner border from the panel
+            UBorder* InnerBorder = Cast<UBorder>(OuterBorder->GetContent());
+            if (InnerBorder)
+            {
+                InnerBorder->SetContent(Content);
+            }
+        }
+
+        return OuterBorder;
     }
 }
 

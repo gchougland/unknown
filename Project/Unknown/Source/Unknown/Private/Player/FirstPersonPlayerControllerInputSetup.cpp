@@ -30,6 +30,7 @@ struct FPlayerControllerInputSetup
 		PC->FlashlightAction = PC->CreateDefaultSubobject<UInputAction>(TEXT("FP_FlashlightAction"));
 		PC->PickupAction = PC->CreateDefaultSubobject<UInputAction>(TEXT("FP_PickupAction"));
 		PC->SpawnCrowbarAction = PC->CreateDefaultSubobject<UInputAction>(TEXT("FP_SpawnCrowbarAction"));
+		PC->PauseAction = PC->CreateDefaultSubobject<UInputAction>(TEXT("FP_PauseAction"));
 		
 		// Value types
 		if (PC->MoveAction) PC->MoveAction->ValueType = EInputActionValueType::Axis2D;
@@ -41,6 +42,7 @@ struct FPlayerControllerInputSetup
 		if (PC->RotateHeldAction) PC->RotateHeldAction->ValueType = EInputActionValueType::Boolean;
 		if (PC->ThrowAction) PC->ThrowAction->ValueType = EInputActionValueType::Boolean;
 		if (PC->FlashlightAction) PC->FlashlightAction->ValueType = EInputActionValueType::Boolean;
+		if (PC->PauseAction) PC->PauseAction->ValueType = EInputActionValueType::Boolean;
 		
 		// Basic mappings (mouse + simple keys)
 		if (PC->DefaultMappingContext && PC->LookAction)
@@ -84,6 +86,10 @@ struct FPlayerControllerInputSetup
 		{
 			PC->DefaultMappingContext->MapKey(PC->SpawnCrowbarAction, EKeys::P);
 		}
+		if (PC->DefaultMappingContext && PC->PauseAction)
+		{
+			PC->DefaultMappingContext->MapKey(PC->PauseAction, EKeys::Escape);
+		}
 	}
 
 	// Ensure input assets exist and are properly configured (called from BeginPlay)
@@ -123,6 +129,7 @@ struct FPlayerControllerInputSetup
 		EnsureAction(PC->FlashlightAction, TEXT("FP_FlashlightAction"), EInputActionValueType::Boolean);
 		EnsureAction(PC->PickupAction, TEXT("FP_PickupAction"), EInputActionValueType::Boolean);
 		EnsureAction(PC->SpawnCrowbarAction, TEXT("FP_SpawnCrowbarAction"), EInputActionValueType::Boolean);
+		EnsureAction(PC->PauseAction, TEXT("FP_PauseAction"), EInputActionValueType::Boolean);
 
 		// Reapply minimal key mappings if the context exists (safe to call repeatedly)
 		if (PC->DefaultMappingContext)
@@ -139,6 +146,7 @@ struct FPlayerControllerInputSetup
 			if (PC->FlashlightAction) { PC->DefaultMappingContext->MapKey(PC->FlashlightAction, EKeys::F); }
 			if (PC->PickupAction) { PC->DefaultMappingContext->MapKey(PC->PickupAction, EKeys::R); }
 			if (PC->SpawnCrowbarAction) { PC->DefaultMappingContext->MapKey(PC->SpawnCrowbarAction, EKeys::P); }
+			if (PC->PauseAction) { PC->DefaultMappingContext->MapKey(PC->PauseAction, EKeys::Escape); }
 		}
 	}
 
@@ -221,6 +229,10 @@ struct FPlayerControllerInputSetup
 			if (PC->SpawnCrowbarAction)
 			{
 				EIC->BindAction(PC->SpawnCrowbarAction, ETriggerEvent::Started, PC, &AFirstPersonPlayerController::OnSpawnItem);
+			}
+			if (PC->PauseAction)
+			{
+				EIC->BindAction(PC->PauseAction, ETriggerEvent::Started, PC, &AFirstPersonPlayerController::OnPausePressed);
 			}
 		}
 	}

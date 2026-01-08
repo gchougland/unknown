@@ -46,7 +46,7 @@ TSharedRef<SWidget> UMainMenuButtonWidget::RebuildWidget()
 			BlackBrush.TintColor = NormalBackgroundColor;
 			BlackBrush.Margin = FMargin(0.f);
 			InnerBorder->SetBrush(BlackBrush);
-			InnerBorder->SetPadding(FMargin(16.f, 10.f)); // Reduced padding between text and button edge
+			InnerBorder->SetPadding(FMargin(16.f, 12.f)); // Left/Right: 16px, Top/Bottom: 12px (symmetric for better centering)
 			InnerBorder->SetHorizontalAlignment(HAlign_Fill);
 			InnerBorder->SetVerticalAlignment(VAlign_Fill);
 			OuterBorder->SetContent(InnerBorder);
@@ -63,11 +63,11 @@ TSharedRef<SWidget> UMainMenuButtonWidget::RebuildWidget()
 		UHorizontalBox* HBox = WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), TEXT("HBox"));
 		if (HBox && ContentOverlay)
 		{
-			// Add to overlay, centered
+			// Add to overlay, fill horizontally and center vertically (like SaveSlotEntryWidget)
 			UPanelSlot* HBoxSlot = ContentOverlay->AddChild(HBox);
 			if (UOverlaySlot* OverlaySlot = Cast<UOverlaySlot>(HBoxSlot))
 			{
-				OverlaySlot->SetHorizontalAlignment(HAlign_Center);
+				OverlaySlot->SetHorizontalAlignment(HAlign_Fill);
 				OverlaySlot->SetVerticalAlignment(VAlign_Center);
 			}
 
@@ -76,6 +76,8 @@ TSharedRef<SWidget> UMainMenuButtonWidget::RebuildWidget()
 			if (CursorSizeBox)
 			{
 				CursorSizeBox->SetWidthOverride(2.f);
+				// Set height to match text height (approximately 18px based on font size)
+				CursorSizeBox->SetHeightOverride(18.f);
 				
 				CursorBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("CursorBorder"));
 				if (CursorBorder)
@@ -86,6 +88,8 @@ TSharedRef<SWidget> UMainMenuButtonWidget::RebuildWidget()
 					CursorBrush.Margin = FMargin(0.f);
 					CursorBorder->SetBrush(CursorBrush);
 					CursorBorder->SetVisibility(ESlateVisibility::Collapsed);
+					// Ensure cursor fills available vertical space
+					CursorBorder->SetVerticalAlignment(VAlign_Fill);
 					CursorSizeBox->SetContent(CursorBorder);
 				}
 				
@@ -106,11 +110,28 @@ TSharedRef<SWidget> UMainMenuButtonWidget::RebuildWidget()
 				ButtonText->SetJustification(ETextJustify::Center);
 				ButtonText->SetText(FText::FromString(TEXT("Button"))); // Default text
 				
-				// Add text to horizontal box
-				if (UHorizontalBoxSlot* TextSlot = HBox->AddChildToHorizontalBox(ButtonText))
+				// Wrap text in a SizeBox to ensure proper vertical centering
+				USizeBox* TextSizeBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("TextSizeBox"));
+				if (TextSizeBox)
 				{
-					TextSlot->SetVerticalAlignment(VAlign_Center);
-					TextSlot->SetSize(ESlateSizeRule::Fill);
+					// Don't set height override - let it size to content
+					TextSizeBox->SetContent(ButtonText);
+					
+					// Add text SizeBox to horizontal box
+					if (UHorizontalBoxSlot* TextSlot = HBox->AddChildToHorizontalBox(TextSizeBox))
+					{
+						TextSlot->SetVerticalAlignment(VAlign_Center);
+						TextSlot->SetSize(ESlateSizeRule::Fill);
+					}
+				}
+				else
+				{
+					// Fallback: add text directly if SizeBox creation fails
+					if (UHorizontalBoxSlot* TextSlot = HBox->AddChildToHorizontalBox(ButtonText))
+					{
+						TextSlot->SetVerticalAlignment(VAlign_Center);
+						TextSlot->SetSize(ESlateSizeRule::Fill);
+					}
 				}
 			}
 		}

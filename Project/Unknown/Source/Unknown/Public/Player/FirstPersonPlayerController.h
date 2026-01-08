@@ -62,6 +62,9 @@ protected:
 	// APlayerController
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
+
+	// Restore player position after level load (for save/load system)
+	void RestorePlayerPositionAfterLevelLoad();
 	virtual void PlayerTick(float DeltaTime) override;
 	virtual void OnPossess(APawn* InPawn) override;
 
@@ -86,6 +89,7 @@ protected:
 	void OnPickupOngoing(const struct FInputActionValue& Value);
 	void OnPickupReleased(const struct FInputActionValue& Value);
 	void OnSpawnItem(const struct FInputActionValue& Value);
+	void OnPausePressed(const struct FInputActionValue& Value);
 
 	// Ensure mapping context and actions exist and have keys mapped
 	void InitializeInputAssetsIfNeeded();
@@ -128,8 +132,17 @@ protected:
 	UPROPERTY()
 	TObjectPtr<class UInputAction> SpawnCrowbarAction;
 
+	UPROPERTY()
+	TObjectPtr<class UInputAction> PauseAction;
+
 	// Internal state: whether RMB is currently held for rotating a held object
 	bool bRotateHeld = false;
+
+	// Pause menu state
+    bool bIsPaused = false;
+    
+    // Flag to prevent immediate re-pausing after unpausing (input buffering issue)
+    bool bIsUnpausing = false;
 
     // UI: highlight widget that draws a 2D border around current interactable
     UPROPERTY()
@@ -159,6 +172,10 @@ protected:
     UPROPERTY()
     TObjectPtr<UStatBarWidget> HungerBarWidget;
 
+    // UI: pause menu widget
+    UPROPERTY()
+    TObjectPtr<class UPauseMenuWidget> PauseMenuWidget;
+
     // Cached UI-open state used to quickly gate inputs without dereferencing widgets
     bool bInventoryUIOpen = false;
 
@@ -182,4 +199,7 @@ protected:
 	friend struct FPlayerControllerUIManager;
 	friend struct FPlayerControllerInteractionHandler;
 	friend struct FPlayerControllerTickHandler;
+	
+	// Friend declaration for pause menu widget to access bIsUnpausing
+	friend class UPauseMenuWidget;
 };

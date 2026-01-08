@@ -14,11 +14,13 @@
 #include "Player/HungerComponent.h"
 #include "UI/StorageWindowWidget.h"
 #include "UI/StorageListWidget.h"
+#include "UI/PauseMenuWidget.h"
 #include "Inventory/StorageComponent.h"
 #include "Inventory/InventoryComponent.h"
 #include "Inventory/ItemPickup.h"
 #include "Inventory/ItemDefinition.h"
 #include "Engine/World.h"
+#include "Kismet/GameplayStatics.h"
 
 // Helper struct for UI management logic
 struct FPlayerControllerUIManager
@@ -146,6 +148,26 @@ struct FPlayerControllerUIManager
 				// Configure hunger bar appearance
 				PC->HungerBarWidget->SetLabel(TEXT("HGR"));
 				PC->HungerBarWidget->SetFillColor(FLinearColor(0.8f, 0.2f, 0.2f, 1.0f)); // Red
+			}
+		}
+
+		// Create and add the pause menu widget
+		if (!PC->PauseMenuWidget)
+		{
+			PC->PauseMenuWidget = CreateWidget<UPauseMenuWidget>(PC, UPauseMenuWidget::StaticClass());
+			if (PC->PauseMenuWidget)
+			{
+				PC->PauseMenuWidget->AddToViewport(2000); // High Z-order to appear above everything
+				PC->PauseMenuWidget->SetVisibility(ESlateVisibility::Collapsed);
+				
+				// Center on screen - MUST be set AFTER AddToViewport
+				// NOTE: SetPositionInViewport can reset anchors, so set anchors AFTER position
+				// Increased height to accommodate all buttons with proper spacing
+				PC->PauseMenuWidget->SetDesiredSizeInViewport(FVector2D(300.f, 500.f));
+				PC->PauseMenuWidget->SetAlignmentInViewport(FVector2D(0.5f, 0.5f));
+				PC->PauseMenuWidget->SetPositionInViewport(FVector2D(0.f, 0.f)); // Center - position 0,0 with center anchor/alignment centers the widget
+				// Set anchors LAST - SetPositionInViewport can reset them, so we set anchors after
+				PC->PauseMenuWidget->SetAnchorsInViewport(FAnchors(0.5f, 0.5f, 0.5f, 0.5f));
 			}
 		}
 	}
