@@ -15,6 +15,12 @@
 #include "UI/StorageWindowWidget.h"
 #include "UI/StorageListWidget.h"
 #include "UI/PauseMenuWidget.h"
+#include "UI/LoadingFadeWidget.h"
+#include "Save/GameSaveData.h"
+#include "Kismet/GameplayStatics.h"
+#include "HAL/PlatformFilemanager.h"
+#include "HAL/FileManagerGeneric.h"
+#include "Misc/Paths.h"
 #include "Inventory/StorageComponent.h"
 #include "Inventory/InventoryComponent.h"
 #include "Inventory/ItemPickup.h"
@@ -170,6 +176,63 @@ struct FPlayerControllerUIManager
 				PC->PauseMenuWidget->SetAnchorsInViewport(FAnchors(0.5f, 0.5f, 0.5f, 0.5f));
 			}
 		}
+
+		// Create and add the loading fade widget (fullscreen black overlay)
+		if (!PC->LoadingFadeWidget)
+		{
+			PC->LoadingFadeWidget = CreateWidget<ULoadingFadeWidget>(PC, ULoadingFadeWidget::StaticClass());
+			if (PC->LoadingFadeWidget)
+			{
+				PC->LoadingFadeWidget->AddToViewport(3000); // Highest Z-order to appear above everything during loading
+				// Fill the entire viewport
+				PC->LoadingFadeWidget->SetAnchorsInViewport(FAnchors(0.f, 0.f, 1.f, 1.f));
+				PC->LoadingFadeWidget->SetAlignmentInViewport(FVector2D(0.f, 0.f));
+				PC->LoadingFadeWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
+				
+				// Check if there's a temp save (indicating a level transition load or new game)
+				// If so, start black so we can fade in after restoration/save creation
+				FString TempSlotName = TEXT("_TEMP_RESTORE_POSITION_");
+				FString NewGameSlotPrefix = TEXT("_NEWGAME_");
+				bool bShouldStartBlack = false;
+				
+				if (UGameSaveData* TempSave = Cast<UGameSaveData>(UGameplayStatics::LoadGameFromSlot(TempSlotName, 0)))
+				{
+					// Level transition load - start black so we can fade in after restoration
+					bShouldStartBlack = true;
+					UE_LOG(LogTemp, Display, TEXT("[SaveSystem] LoadingFadeWidget created during level transition - starting black"));
+				}
+				else
+				{
+					// Check for new game temp save
+					FString SaveDir = FPaths::ProjectSavedDir() / TEXT("SaveGames");
+					IFileManager& FileManager = IFileManager::Get();
+					TArray<FString> SaveFiles;
+					FileManager.FindFiles(SaveFiles, *SaveDir, TEXT("*.sav"));
+					
+					for (const FString& SaveFile : SaveFiles)
+					{
+						FString FileName = FPaths::GetBaseFilename(SaveFile);
+						if (FileName.StartsWith(NewGameSlotPrefix))
+						{
+							// New game load - start black so we can fade in after save creation
+							bShouldStartBlack = true;
+							break;
+						}
+					}
+				}
+				
+				if (bShouldStartBlack)
+				{
+					// Level transition or new game - start black so we can fade in after restoration/save creation
+					PC->LoadingFadeWidget->SetOpacity(1.0f);
+				}
+				else
+				{
+					// Normal level load - start invisible
+					PC->LoadingFadeWidget->SetOpacity(0.0f);
+				}
+			}
+		}
 	}
 
 	// Toggle inventory screen
@@ -191,7 +254,6 @@ struct FPlayerControllerUIManager
 				PC->InventoryScreen->SetAlignmentInViewport(FVector2D(0.f, 0.f));
 				// Close the inventory when the widget requests it (Tab/I/Esc)
 				PC->InventoryScreen->OnRequestClose.AddDynamic(PC, &AFirstPersonPlayerController::ToggleInventory);
-				UE_LOG(LogTemp, Display, TEXT("[PC] Inventory widget created and added to viewport"));
 			}
 		}
 		else
@@ -229,7 +291,6 @@ struct FPlayerControllerUIManager
 			PC->SetIgnoreLookInput(false);
 			PC->SetIgnoreMoveInput(false);
 			PC->bShowMouseCursor = false;
-			UE_LOG(LogTemp, Display, TEXT("[PC] Inventory closed; returning to GameOnly input"));
 		}
 		else
 		{
@@ -253,7 +314,6 @@ struct FPlayerControllerUIManager
 			PC->SetIgnoreLookInput(true);
 			PC->SetIgnoreMoveInput(true);
 			PC->bShowMouseCursor = true;
-			UE_LOG(LogTemp, Display, TEXT("[PC] Inventory opened; using UIOnly input"));
 		}
 	}
 
@@ -277,7 +337,6 @@ struct FPlayerControllerUIManager
 				PC->InventoryScreen->SetAlignmentInViewport(FVector2D(0.f, 0.f));
 				// Close the inventory when the widget requests it (Tab/I/Esc)
 				PC->InventoryScreen->OnRequestClose.AddDynamic(PC, &AFirstPersonPlayerController::ToggleInventory);
-				UE_LOG(LogTemp, Display, TEXT("[PC] Inventory widget created and added to viewport"));
 			}
 		}
 		else
@@ -320,13 +379,11 @@ struct FPlayerControllerUIManager
 			PC->SetIgnoreLookInput(true);
 			PC->SetIgnoreMoveInput(true);
 			PC->bShowMouseCursor = true;
-			UE_LOG(LogTemp, Display, TEXT("[PC] Inventory opened with storage; using UIOnly input"));
 		}
 		else
 		{
 			// Already open - just refresh
 			PC->InventoryScreen->Refresh();
-			UE_LOG(LogTemp, Display, TEXT("[PC] Updated open inventory with storage"));
 		}
 
 		// Show and open storage window separately (to the left of inventory)
@@ -358,7 +415,6 @@ struct FPlayerControllerUIManager
 				{
 					StorageList->OnItemLeftClicked.RemoveAll(PC->InventoryScreen);
 					StorageList->OnItemLeftClicked.AddDynamic(PC->InventoryScreen, &UInventoryScreenWidget::HandleStorageItemLeftClick);
-					UE_LOG(LogTemp, Display, TEXT("[PC] Storage window opened and StorageList bound"));
 				}
 				
 				// Storage changed delegates are bound in StorageWindowWidget::Open()
@@ -394,7 +450,6 @@ struct FPlayerControllerUIManager
 				PC->StorageWindow->SetAnchorsInViewport(FAnchors(0.05f, 0.2f, 0.4f, 0.8f));
 				PC->StorageWindow->SetAlignmentInViewport(FVector2D(0.f, 0.f));
 				PC->StorageWindow->SetVisibility(ESlateVisibility::Collapsed); // Hidden by default
-				UE_LOG(LogTemp, Display, TEXT("[PC] Storage window widget created and added to viewport"));
 			}
 		}
 		return PC->StorageWindow;

@@ -24,6 +24,11 @@ bool UEquipmentComponent::GetEquipped(EEquipmentSlot Slot, FItemEntry& OutEntry)
     return false;
 }
 
+TMap<EEquipmentSlot, FItemEntry> UEquipmentComponent::GetAllEquippedItems() const
+{
+	return Equipped;
+}
+
 int32 UEquipmentComponent::FindEntryIndexById(const FGuid& ItemId) const
 {
     if (!Inventory)

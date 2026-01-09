@@ -26,9 +26,13 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Equipment")
     TObjectPtr<UInventoryComponent> Inventory;
 
-    /** Get the currently equipped entry for a slot, if any. */
-    UFUNCTION(BlueprintPure, Category="Equipment")
-    bool GetEquipped(EEquipmentSlot Slot, FItemEntry& OutEntry) const;
+	/** Get the currently equipped entry for a slot, if any. */
+	UFUNCTION(BlueprintPure, Category="Equipment")
+	bool GetEquipped(EEquipmentSlot Slot, FItemEntry& OutEntry) const;
+
+	/** Get all equipped items as a map of slot to item entry. Useful for save system. */
+	UFUNCTION(BlueprintCallable, Category="Equipment")
+	TMap<EEquipmentSlot, FItemEntry> GetAllEquippedItems() const;
 
     /** Equip an item instance from the inventory (by ItemId). Replaces existing item in the slot; returns/re-drops that item if needed. */
     UFUNCTION(BlueprintCallable, Category="Equipment")

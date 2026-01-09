@@ -98,7 +98,6 @@ TArray<UInventoryListWidget::FAggregateRow> UInventoryListWidget::BuildAggregate
 	}
 	
 	const TArray<FItemEntry>& Entries = Inventory->GetEntries();
-	UE_LOG(LogTemp, Display, TEXT("[InventoryListWidget] BuildAggregate: Inventory has %d entries"), Entries.Num());
 	
 	// Aggregate by pointer
 	TMap<UItemDefinition*, FAggregateRow> Map;
@@ -115,7 +114,6 @@ TArray<UInventoryListWidget::FAggregateRow> UInventoryListWidget::BuildAggregate
 		Row->TotalVolume += FMath::Max(0.f, E.Def->VolumePerUnit);
 	}
 	Map.GenerateValueArray(Out);
-	UE_LOG(LogTemp, Display, TEXT("[InventoryListWidget] BuildAggregate: Created %d aggregate rows"), Out.Num());
 	
 	// Optional: sort by name
 	Out.Sort([](const FAggregateRow& A, const FAggregateRow& B)
@@ -131,7 +129,6 @@ void UInventoryListWidget::RebuildFromInventory()
 {
 	if (!WidgetTree || !RootList)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[InventoryListWidget] RebuildFromInventory: WidgetTree=%p, RootList=%p"), WidgetTree ? WidgetTree.Get() : nullptr, RootList ? RootList.Get() : nullptr);
 		return;
 	}
 	
@@ -139,7 +136,6 @@ void UInventoryListWidget::RebuildFromInventory()
 	RootList->ClearChildren();
 	
 	const TArray<FAggregateRow> Rows = BuildAggregate();
-	UE_LOG(LogTemp, Display, TEXT("[InventoryListWidget] RebuildFromInventory: Adding %d rows to list"), Rows.Num());
 	
 	for (const FAggregateRow& R : Rows)
 	{
@@ -163,7 +159,6 @@ void UInventoryListWidget::RebuildFromInventory()
 		if (UVerticalBoxSlot* VBSlot = RootList->AddChildToVerticalBox(RowWidget))
 		{
 			VBSlot->SetPadding(FMargin(2.f));
-			UE_LOG(LogTemp, Verbose, TEXT("[InventoryListWidget] Added row widget for %s"), R.Def ? *R.Def->GetName() : TEXT("NULL"));
 		}
 		else
 		{

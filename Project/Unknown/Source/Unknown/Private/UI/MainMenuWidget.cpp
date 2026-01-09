@@ -1,5 +1,8 @@
 #include "UI/MainMenuWidget.h"
 #include "UI/MainMenuButtonWidget.h"
+#include "Player/MainMenuPlayerController.h"
+#include "UI/LoadingFadeWidget.h"
+#include "TimerManager.h"
 #include "UI/SaveSlotMenuWidget.h"
 #include "UI/ConfirmationMenuWidget.h"
 #include "UI/SaveNameInputWidget.h"
@@ -508,8 +511,34 @@ void UMainMenuWidget::OnSaveNameEntered(const FString& SaveName)
 					UWorld* World = GetWorld();
 					if (World)
 					{
-						// Open MainMap level - save will be created after level loads
-						UGameplayStatics::OpenLevel(World, TEXT("MainMap"));
+						// Fade to black before opening MainMap for new game
+						APlayerController* PC = UGameplayStatics::GetPlayerController(World, 0);
+						AMainMenuPlayerController* MainMenuPC = Cast<AMainMenuPlayerController>(PC);
+						
+						if (MainMenuPC && MainMenuPC->LoadingFadeWidget)
+						{
+							// Fade out quickly (0.3 seconds) to hide the transition
+							MainMenuPC->LoadingFadeWidget->FadeOut(0.3f);
+							
+							// Wait for fade to complete before opening level
+							// Use a weak pointer to the world to avoid issues
+							TWeakObjectPtr<UWorld> WeakWorld = World;
+							const float FadeOutDuration = 0.3f;
+							FTimerHandle FadeOutTimer;
+							World->GetTimerManager().SetTimer(FadeOutTimer, FTimerDelegate::CreateLambda([WeakWorld]()
+							{
+								if (UWorld* WorldPtr = WeakWorld.Get())
+								{
+									// Open MainMap level - save will be created after level loads
+									UGameplayStatics::OpenLevel(WorldPtr, TEXT("MainMap"));
+								}
+							}), FadeOutDuration, false);
+						}
+						else
+						{
+							// No fade widget available, open level immediately
+							UGameplayStatics::OpenLevel(World, TEXT("MainMap"));
+						}
 					}
 				}
 			}

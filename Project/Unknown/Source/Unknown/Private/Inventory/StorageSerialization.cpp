@@ -26,6 +26,20 @@ namespace StorageSerialization
 			Result += DefPath;
 			Result += TEXT("|");
 			Result += ItemIdStr;
+			
+			// Store CustomData count and entries
+			int32 CustomDataCount = Entry.CustomData.Num();
+			Result += TEXT("|");
+			Result += FString::FromInt(CustomDataCount);
+			
+			// Store each CustomData key-value pair
+			for (const auto& CustomDataPair : Entry.CustomData)
+			{
+				Result += TEXT("|");
+				Result += CustomDataPair.Key.ToString();
+				Result += TEXT("=");
+				Result += CustomDataPair.Value;
+			}
 		}
 		
 		return Result;
@@ -54,44 +68,114 @@ namespace StorageSerialization
 			return Result;
 		}
 		
-		// Each entry takes 2 parts (DefPath, ItemId)
-		const int32 ExpectedParts = 1 + (EntryCount * 2);
-		if (Parts.Num() < ExpectedParts)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("[StorageSerialization] DeserializeStorageEntries: Invalid format, expected %d parts, got %d"), ExpectedParts, Parts.Num());
-			return Result;
-		}
+		// Check if this is old format (exactly 1 + (Count * 2) parts) or new format (has CustomData)
+		const int32 OldFormatExpectedParts = 1 + (EntryCount * 2);
+		bool bIsOldFormat = (Parts.Num() == OldFormatExpectedParts);
 		
-		int32 PartIndex = 1;
-		for (int32 i = 0; i < EntryCount; ++i)
+		if (bIsOldFormat)
 		{
-			if (PartIndex + 1 >= Parts.Num())
+			// Old format: no CustomData, just DefPath and ItemId
+			int32 PartIndex = 1;
+			for (int32 i = 0; i < EntryCount; ++i)
 			{
-				break;
+				if (PartIndex + 1 >= Parts.Num())
+				{
+					break;
+				}
+				
+				FString DefPath = Parts[PartIndex++];
+				FString ItemIdStr = Parts[PartIndex++];
+				
+				// Load the ItemDefinition from path
+				UItemDefinition* Def = LoadObject<UItemDefinition>(nullptr, *DefPath);
+				if (!Def)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("[StorageSerialization] Failed to load ItemDefinition from path: %s"), *DefPath);
+					continue;
+				}
+				
+				FGuid ItemId;
+				if (!FGuid::Parse(ItemIdStr, ItemId))
+				{
+					UE_LOG(LogTemp, Warning, TEXT("[StorageSerialization] Failed to parse ItemId: %s"), *ItemIdStr);
+					continue;
+				}
+				
+				FItemEntry Entry;
+				Entry.Def = Def;
+				Entry.ItemId = ItemId;
+				// CustomData will be empty (default)
+				Result.Add(Entry);
 			}
-			
-			FString DefPath = Parts[PartIndex++];
-			FString ItemIdStr = Parts[PartIndex++];
-			
-			// Load the ItemDefinition from path
-			UItemDefinition* Def = LoadObject<UItemDefinition>(nullptr, *DefPath);
-			if (!Def)
+		}
+		else
+		{
+			// New format: includes CustomData
+			int32 PartIndex = 1;
+			for (int32 i = 0; i < EntryCount; ++i)
 			{
-				UE_LOG(LogTemp, Warning, TEXT("[StorageSerialization] Failed to load ItemDefinition from path: %s"), *DefPath);
-				continue;
+				if (PartIndex + 2 >= Parts.Num())
+				{
+					// Need at least DefPath, ItemId, and CustomDataCount
+					break;
+				}
+				
+				FString DefPath = Parts[PartIndex++];
+				FString ItemIdStr = Parts[PartIndex++];
+				
+				// Parse CustomData count
+				int32 CustomDataCount = 0;
+				if (!LexTryParseString(CustomDataCount, *Parts[PartIndex++]))
+				{
+					UE_LOG(LogTemp, Warning, TEXT("[StorageSerialization] Failed to parse CustomDataCount for entry %d"), i);
+					continue;
+				}
+				
+				// Load the ItemDefinition from path
+				UItemDefinition* Def = LoadObject<UItemDefinition>(nullptr, *DefPath);
+				if (!Def)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("[StorageSerialization] Failed to load ItemDefinition from path: %s"), *DefPath);
+					// Skip CustomData entries for this item
+					PartIndex += CustomDataCount;
+					continue;
+				}
+				
+				FGuid ItemId;
+				if (!FGuid::Parse(ItemIdStr, ItemId))
+				{
+					UE_LOG(LogTemp, Warning, TEXT("[StorageSerialization] Failed to parse ItemId: %s"), *ItemIdStr);
+					// Skip CustomData entries for this item
+					PartIndex += CustomDataCount;
+					continue;
+				}
+				
+				FItemEntry Entry;
+				Entry.Def = Def;
+				Entry.ItemId = ItemId;
+				Entry.CustomData.Empty();
+				
+				// Parse CustomData key-value pairs
+				for (int32 j = 0; j < CustomDataCount; ++j)
+				{
+					if (PartIndex >= Parts.Num())
+					{
+						UE_LOG(LogTemp, Warning, TEXT("[StorageSerialization] Not enough parts for CustomData entry %d of item %d"), j, i);
+						break;
+					}
+					
+					FString CustomDataPart = Parts[PartIndex++];
+					int32 EqualsIndex = CustomDataPart.Find(TEXT("="));
+					if (EqualsIndex != INDEX_NONE)
+					{
+						FString Key = CustomDataPart.Left(EqualsIndex);
+						FString Value = CustomDataPart.RightChop(EqualsIndex + 1);
+						Entry.CustomData.Add(*Key, Value);
+					}
+				}
+				
+				Result.Add(Entry);
 			}
-			
-			FGuid ItemId;
-			if (!FGuid::Parse(ItemIdStr, ItemId))
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[StorageSerialization] Failed to parse ItemId: %s"), *ItemIdStr);
-				continue;
-			}
-			
-			FItemEntry Entry;
-			Entry.Def = Def;
-			Entry.ItemId = ItemId;
-			Result.Add(Entry);
 		}
 		
 		return Result;

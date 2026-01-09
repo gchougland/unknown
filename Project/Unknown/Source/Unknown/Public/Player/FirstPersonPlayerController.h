@@ -179,6 +179,13 @@ protected:
     // Cached UI-open state used to quickly gate inputs without dereferencing widgets
     bool bInventoryUIOpen = false;
 
+public:
+    // UI: loading fade widget (fullscreen black overlay for transitions)
+    UPROPERTY()
+    TObjectPtr<class ULoadingFadeWidget> LoadingFadeWidget;
+
+private:
+
     // Hold-to-drop state
     float HoldDropTimer = 0.0f;
     static constexpr float HoldDropDuration = 0.75f;

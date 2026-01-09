@@ -36,7 +36,6 @@ TSharedRef<SWidget> UHotbarWidget::RebuildWidget()
 void UHotbarWidget::NativeConstruct()
 {
     Super::NativeConstruct();
-    UE_LOG(LogTemp, Display, TEXT("[HotbarWidget] NativeConstruct (this=%s)"), *GetName());
     // Do not rebuild here — rebuilding after Slate creation can desync on-screen widgets vs. arrays
     RefreshAll();
 
@@ -88,11 +87,9 @@ void UHotbarWidget::RebuildSlots()
     {
         return;
     }
-    UE_LOG(LogTemp, Display, TEXT("[HotbarWidget] RebuildSlots start (AssignedTypes=%d)"), AssignedTypes.Num());
     // Clear previous tree content by recreating the root
     RootBox = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("RootBox"));
     WidgetTree->RootWidget = RootBox;
-    UE_LOG(LogTemp, Display, TEXT("[HotbarWidget] RootWidget set to RootBox: %s"), *GetNameSafe(RootBox));
 
 	SlotBorders.Empty();
  SlotIcons.Empty();
@@ -122,7 +119,6 @@ void UHotbarWidget::RebuildSlots()
             SlotHotkeys.Add(SlotWidgets.Hotkey);
         }
     }
-    UE_LOG(LogTemp, Display, TEXT("[HotbarWidget] RebuildSlots end (Num=%d)"), Num);
 }
 
 void UHotbarWidget::RefreshAll()
@@ -267,14 +263,12 @@ void UHotbarWidget::UpdateSlotQuantity(int32 Index)
             Label->InvalidateLayoutAndVolatility();
             InvalidateLayoutAndVolatility();
             // Overlay draws children in the order added; Quantity is added after Hotkey, so it renders above it.
-            UE_LOG(LogTemp, Display, TEXT("[HotbarWidget] Show Qty slot %d => %d (Vis=%d, Opacity=%.2f, Label=%s, Parent=%s)"), Index, Quantity, (int32)Label->GetVisibility(), Label->GetRenderOpacity(), *GetNameSafe(Label), *GetNameSafe(Label->GetParent()));
         }
         else
         {
             Label->SetText(FText::GetEmpty());
             // Hide when not used
             Label->SetVisibility(ESlateVisibility::Collapsed);
-            UE_LOG(LogTemp, Display, TEXT("[HotbarWidget] Hide Qty slot %d (Q=%d)"), Index, Quantity);
         }
     }
     else

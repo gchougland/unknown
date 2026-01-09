@@ -1,5 +1,9 @@
 #include "UI/PauseMenuWidget.h"
 #include "UI/MainMenuButtonWidget.h"
+#include "Player/FirstPersonPlayerController.h"
+#include "UI/LoadingFadeWidget.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
 #include "UI/SaveSlotMenuWidget.h"
 #include "UI/ConfirmationMenuWidget.h"
 #include "UI/SaveNameInputWidget.h"
@@ -643,7 +647,7 @@ void UPauseMenuWidget::OnConfirmationConfirmed()
 		}
 		else if (PendingOperation == EPendingOperation::ExitToMainMenu)
 		{
-			// Exit to main menu
+			// Exit to main menu - instant transition
 			UWorld* World = GetWorld();
 			if (World)
 			{

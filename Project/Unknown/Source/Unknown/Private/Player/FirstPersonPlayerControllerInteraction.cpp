@@ -13,6 +13,7 @@
 #include "Inventory/ItemUseAction.h"
 #include "Inventory/ItemAttackAction.h"
 #include "Inventory/StorageComponent.h"
+#include "Inventory/StorageSerialization.h"
 #include "Inventory/InventoryComponent.h"
 #include "Interfaces/IAttackable.h"
 
@@ -544,10 +545,31 @@ struct FPlayerControllerInteractionHandler
 								UInventoryComponent* Inv = C->GetInventory();
 								if (Inv)
 								{
-									FItemEntry Entry; Entry.Def = Def; Entry.ItemId = FGuid::NewGuid();
+									// Get the full ItemEntry from the pickup to preserve CustomData (like UsesRemaining)
+									FItemEntry Entry = Pickup->GetItemEntry();
+									if (!Entry.IsValid())
+									{
+										// Fallback: create entry from Def if GetItemEntry() failed
+										Entry.Def = Def;
+										Entry.ItemId = FGuid::NewGuid();
+									}
+									
+									// Generate a new GUID if the pickup has an invalid one (all zeros)
+									if (!Entry.ItemId.IsValid())
+									{
+										Entry.ItemId = FGuid::NewGuid();
+									}
+									
+									// If this is a storage container, save its storage data before adding to inventory
+									if (UStorageComponent* StorageComp = Pickup->FindComponentByClass<UStorageComponent>())
+									{
+										StorageSerialization::SaveStorageToItemEntry(StorageComp, Entry);
+									}
+									
 									if (Inv->TryAdd(Entry))
 									{
-										UE_LOG(LogTemp, Display, TEXT("[Pickup] Added %s to inventory"), *Def->GetName());
+										UE_LOG(LogTemp, Display, TEXT("[Pickup] Added %s to inventory (CustomData: %d entries)"), 
+											*Def->GetName(), Entry.CustomData.Num());
 										Pickup->Destroy();
 										if (PC->bInventoryUIOpen && PC->InventoryScreen)
 										{

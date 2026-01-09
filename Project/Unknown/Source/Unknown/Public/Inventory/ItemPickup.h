@@ -8,6 +8,7 @@
 // Forward declarations
 class UStaticMeshComponent;
 class UItemDefinition;
+class USaveableActorComponent;
 struct FPropertyChangedEvent;
 struct FItemEntry;
 
@@ -24,6 +25,10 @@ public:
 	// Visual mesh and simple collision
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Pickup")
 	TObjectPtr<UStaticMeshComponent> Mesh;
+
+	// Saveable component for save system (automatically added)
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Pickup")
+	TObjectPtr<USaveableActorComponent> SaveableComponent;
 
 	// Item payload (one unit)
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Pickup")

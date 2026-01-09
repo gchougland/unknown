@@ -1,6 +1,19 @@
 #include "Save/SaveSystemSubsystem.h"
 #include "Save/GameSaveData.h"
+#include "Save/SaveSystemHelpers.h"
 #include "Player/FirstPersonCharacter.h"
+#include "Player/FirstPersonPlayerController.h"
+#include "UI/LoadingFadeWidget.h"
+#include "Player/HungerComponent.h"
+#include "Inventory/InventoryComponent.h"
+#include "Inventory/HotbarComponent.h"
+#include "Inventory/EquipmentComponent.h"
+#include "Inventory/StorageComponent.h"
+#include "Inventory/StorageSerialization.h"
+#include "Inventory/ItemDefinition.h"
+#include "Inventory/ItemPickup.h"
+#include "Components/SaveableActorComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
 #include "Engine/Level.h"
@@ -12,10 +25,17 @@
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/PlatformFile.h"
 #include "UObject/Object.h"
+#include "GameFramework/Actor.h"
+#include "Engine/Engine.h"
+#include "EngineUtils.h"
+#include "TimerManager.h"
 
 void USaveSystemSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
+	CurrentSaveData = nullptr;
+	CurrentSlotId.Empty();
+	CurrentSaveName.Empty();
 }
 
 FString USaveSystemSubsystem::SanitizeSaveNameForFilename(const FString& SaveName) const
@@ -126,18 +146,138 @@ bool USaveSystemSubsystem::SaveGame(const FString& SlotId, const FString& SaveNa
 		return false;
 	}
 
-	// Create save game object
-	UGameSaveData* SaveGameInstance = Cast<UGameSaveData>(UGameplayStatics::CreateSaveGameObject(UGameSaveData::StaticClass()));
-	if (!SaveGameInstance)
+	// Get save slot name
+	FString SlotName = GetSlotName(SlotId, SaveName);
+	
+	// Check if we're saving to a different slot than the current one
+	bool bSavingToDifferentSlot = (SlotId != CurrentSlotId);
+	
+	UGameSaveData* SaveGameInstance = nullptr;
+	TMap<FGuid, FActorStateSaveData> PreviousActorStates;
+	
+	if (CurrentSaveData && !bSavingToDifferentSlot)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[SaveSystem] Failed to create save game object"));
-		return false;
+		// Using current save data - preserve baseline and previous actor states
+		SaveGameInstance = CurrentSaveData;
+		
+		// Cache previous actor states for looking up metadata of removed actors
+		for (const FActorStateSaveData& PreviousState : SaveGameInstance->ActorStates)
+		{
+			PreviousActorStates.Add(PreviousState.ActorId, PreviousState);
+		}
+	}
+	else if (CurrentSaveData && bSavingToDifferentSlot)
+	{
+		// Saving to a different slot - copy current save data (including baseline) to preserve it
+		SaveGameInstance = Cast<UGameSaveData>(UGameplayStatics::CreateSaveGameObject(UGameSaveData::StaticClass()));
+		if (!SaveGameInstance)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[SaveSystem] Failed to create save game object for new slot"));
+			return false;
+		}
+		
+		// Deep copy the current save data (including baseline) - this preserves the original baseline
+		SaveGameInstance->LevelPackagePath = CurrentSaveData->LevelPackagePath;
+		SaveGameInstance->BaselineActorIds = CurrentSaveData->BaselineActorIds;
+		
+		// Cache previous actor states from current save
+		for (const FActorStateSaveData& PreviousState : CurrentSaveData->ActorStates)
+		{
+			PreviousActorStates.Add(PreviousState.ActorId, PreviousState);
+		}
+		
+	}
+	else
+	{
+		// No current save data - try to load existing save from disk
+		SaveGameInstance = Cast<UGameSaveData>(UGameplayStatics::LoadGameFromSlot(SlotName, 0));
+		
+		if (SaveGameInstance)
+		{
+			// Loaded existing save - cache previous actor states
+			for (const FActorStateSaveData& PreviousState : SaveGameInstance->ActorStates)
+			{
+				PreviousActorStates.Add(PreviousState.ActorId, PreviousState);
+			}
+		}
+		else
+		{
+			// No existing save - create new save game object
+			// Note: This should NOT happen during normal gameplay - only if loading failed or starting fresh
+			// The baseline will be established below when we see BaselineActorIds is empty
+			SaveGameInstance = Cast<UGameSaveData>(UGameplayStatics::CreateSaveGameObject(UGameSaveData::StaticClass()));
+			if (!SaveGameInstance)
+			{
+				UE_LOG(LogTemp, Error, TEXT("[SaveSystem] Failed to create save game object"));
+				return false;
+			}
+			UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Creating new save (no current save data and no existing save found on disk) - baseline will be established"));
+		}
+	}
+	
+	// Update current save data reference if we're saving to the same slot
+	if (!bSavingToDifferentSlot)
+	{
+		CurrentSaveData = SaveGameInstance;
+		CurrentSlotId = SlotId;
+		CurrentSaveName = SaveName.IsEmpty() ? FString::Printf(TEXT("Save %s"), *SlotId) : SaveName;
 	}
 
-	// Save player location and rotation
+	// Save player location and rotation (legacy fields for backward compatibility)
 	SaveGameInstance->PlayerLocation = PlayerCharacter->GetActorLocation();
 	SaveGameInstance->PlayerRotation = PlayerCharacter->GetActorRotation();
 	SaveGameInstance->SaveName = SaveName.IsEmpty() ? FString::Printf(TEXT("Save %s"), *SlotId) : SaveName;
+
+	// === Save Player Data ===
+	SaveGameInstance->PlayerData.Location = PlayerCharacter->GetActorLocation();
+	SaveGameInstance->PlayerData.Rotation = PlayerCharacter->GetActorRotation();
+	
+	// Save hunger stats
+	if (UHungerComponent* HungerComp = PlayerCharacter->GetHunger())
+	{
+		SaveGameInstance->PlayerData.CurrentHunger = HungerComp->GetCurrentHunger();
+		SaveGameInstance->PlayerData.MaxHunger = HungerComp->GetMaxHunger();
+	}
+
+	// Save inventory
+	if (UInventoryComponent* InventoryComp = PlayerCharacter->GetInventory())
+	{
+		SaveGameInstance->InventoryData.SerializedEntries = 
+			StorageSerialization::SerializeStorageEntries(InventoryComp->GetEntries());
+	}
+
+	// Save hotbar
+	if (UHotbarComponent* HotbarComp = PlayerCharacter->GetHotbar())
+	{
+		SaveGameInstance->HotbarData.ActiveIndex = HotbarComp->GetActiveIndex();
+		SaveGameInstance->HotbarData.AssignedItemPaths.Empty();
+		
+		for (int32 i = 0; i < HotbarComp->GetNumSlots(); ++i)
+		{
+			const FHotbarSlot& Slot = HotbarComp->GetSlot(i);
+			if (Slot.AssignedType)
+			{
+				SaveGameInstance->HotbarData.AssignedItemPaths.Add(Slot.AssignedType->GetPathName());
+			}
+			else
+			{
+				SaveGameInstance->HotbarData.AssignedItemPaths.Add(FString()); // Empty string for unassigned slots
+			}
+		}
+	}
+
+	// Save equipment
+	if (UEquipmentComponent* EquipmentComp = PlayerCharacter->GetEquipment())
+	{
+		SaveGameInstance->EquipmentData.SerializedEquippedItems.Empty();
+		TMap<EEquipmentSlot, FItemEntry> EquippedItems = EquipmentComp->GetAllEquippedItems();
+		
+		for (const auto& Pair : EquippedItems)
+		{
+			FString Serialized = SaveSystemHelpers::SerializeEquipmentSlot(Pair.Key, Pair.Value);
+			SaveGameInstance->EquipmentData.SerializedEquippedItems.Add(Serialized);
+		}
+	}
 
 	// Save current level package path (for standalone builds, use package path)
 	// Get the level's package - this works in both editor and standalone
@@ -232,12 +372,225 @@ bool USaveSystemSubsystem::SaveGame(const FString& SlotId, const FString& SaveNa
 	UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Saving level package path: %s (original: %s, MapName: %s)"), 
 		*NormalizedPath, *LevelPackagePath, *World->GetMapName());
 
+	// === Unified Actor State Tracking ===
+	// Note: PreviousActorStates was already cached above when loading the save
+	// Save all actors with SaveableActorComponent and their current state
+	SaveGameInstance->ActorStates.Empty();
+	TArray<FGuid> CurrentActorIds;
+	
+	for (TActorIterator<AActor> ActorIterator(World); ActorIterator; ++ActorIterator)
+	{
+		AActor* Actor = *ActorIterator;
+		if (!Actor)
+		{
+			continue;
+		}
+
+		// Check if actor has SaveableActorComponent
+		USaveableActorComponent* SaveableComp = Actor->FindComponentByClass<USaveableActorComponent>();
+		if (!SaveableComp)
+		{
+			continue;
+		}
+
+		FGuid ActorId = SaveableComp->GetPersistentId();
+		if (!ActorId.IsValid())
+		{
+			continue;
+		}
+
+		CurrentActorIds.Add(ActorId);
+
+		// Create actor state data
+		FActorStateSaveData ActorState;
+		ActorState.ActorId = ActorId;
+		ActorState.bExists = true;
+		
+		// Save actor identification metadata (for fallback matching)
+		ActorState.ActorName = Actor->GetName();
+		ActorState.ActorClassPath = Actor->GetClass()->GetPathName();
+		
+		// Get OriginalTransform - if not set yet, use current transform
+		FTransform OriginalTransformToSave = SaveableComp->OriginalTransform;
+		if (OriginalTransformToSave.GetLocation().IsNearlyZero())
+		{
+			// OriginalTransform not set yet - use current transform and set it
+			OriginalTransformToSave = Actor->GetActorTransform();
+			SaveableComp->OriginalTransform = OriginalTransformToSave;
+		}
+		ActorState.OriginalSpawnTransform = OriginalTransformToSave;
+		
+		// Check if this is a new object (not in baseline)
+		// A new object is one that was added after the baseline was established
+		// If baseline is empty, this is the first save, so all actors are part of the baseline (not new objects)
+		bool bIsInBaseline = SaveGameInstance->BaselineActorIds.Num() > 0 && 
+			SaveGameInstance->BaselineActorIds.Contains(ActorId);
+		bool bIsNewObject = SaveGameInstance->BaselineActorIds.Num() > 0 && !bIsInBaseline;
+		
+		if (bIsNewObject)
+		{
+			// This is a new object added after baseline was established (e.g., dropped item)
+			ActorState.bIsNewObject = true;
+			ActorState.SpawnActorClassPath = Actor->GetClass()->GetPathName();
+			
+		}
+		
+		// Save ItemEntry data for ALL ItemPickup actors (both new and existing)
+		// This ensures that changes to world item pickups (like partially eaten food) are persisted
+		if (AItemPickup* ItemPickup = Cast<AItemPickup>(Actor))
+		{
+			if (UItemDefinition* ItemDef = ItemPickup->GetItemDef())
+			{
+				ActorState.ItemDefinitionPath = ItemDef->GetPathName();
+				
+				// Serialize ItemEntry (includes CustomData like UsesRemaining)
+				FItemEntry ItemEntry = ItemPickup->GetItemEntry();
+				ActorState.SerializedItemEntry = SaveSystemHelpers::SerializeItemEntry(ItemEntry);
+			}
+		}
+		
+		// Save transform if enabled
+		if (SaveableComp->bSaveTransform)
+		{
+			ActorState.Location = Actor->GetActorLocation();
+			ActorState.Rotation = Actor->GetActorRotation();
+			ActorState.Scale = Actor->GetActorScale3D();
+		}
+
+		// Check for physics component
+		UPrimitiveComponent* PrimitiveComp = Actor->FindComponentByClass<UPrimitiveComponent>();
+		if (PrimitiveComp && PrimitiveComp->IsSimulatingPhysics())
+		{
+			// Only save physics objects that have moved from their original position
+			if (SaveSystemHelpers::ShouldSavePhysicsObject(Actor, SaveableComp->OriginalTransform))
+			{
+				ActorState.bHasPhysics = true;
+				ActorState.bSimulatePhysics = true;
+				
+				if (SaveableComp->bSavePhysicsState)
+				{
+					ActorState.LinearVelocity = PrimitiveComp->GetPhysicsLinearVelocity();
+					ActorState.AngularVelocity = PrimitiveComp->GetPhysicsAngularVelocityInRadians();
+				}
+			}
+		}
+
+		// Check for storage component
+		UStorageComponent* StorageComp = Actor->FindComponentByClass<UStorageComponent>();
+		if (StorageComp)
+		{
+			ActorState.bHasStorage = true;
+			TArray<FItemEntry> StorageEntries = StorageComp->GetEntries();
+			ActorState.SerializedStorageEntries = StorageSerialization::SerializeStorageEntries(StorageEntries);
+			ActorState.StorageMaxVolume = StorageComp->MaxVolume;
+		}
+
+		SaveGameInstance->ActorStates.Add(ActorState);
+	}
+
+	// === Detect Removed Actors ===
+	// Compare current actors to baseline to detect which ones were removed
+	if (SaveGameInstance->BaselineActorIds.Num() > 0)
+	{
+		// This is a subsequent save - compare to baseline
+		int32 RemovedCount = 0;
+		for (const FGuid& BaselineId : SaveGameInstance->BaselineActorIds)
+		{
+			if (!CurrentActorIds.Contains(BaselineId))
+			{
+				// Actor was in baseline but not in current state - it was removed
+				// Try to find it in the world to get its last known location and metadata (for matching on load)
+				AActor* RemovedActor = USaveableActorComponent::FindActorByGuid(World, BaselineId);
+				FActorStateSaveData RemovedActorState;
+				RemovedActorState.ActorId = BaselineId;
+				RemovedActorState.bExists = false;
+				
+				if (RemovedActor)
+				{
+					// Actor still exists in world - save current metadata
+					RemovedActorState.ActorName = RemovedActor->GetName();
+					RemovedActorState.ActorClassPath = RemovedActor->GetClass()->GetPathName();
+					RemovedActorState.Location = RemovedActor->GetActorLocation();
+					RemovedActorState.Rotation = RemovedActor->GetActorRotation();
+					RemovedActorState.Scale = RemovedActor->GetActorScale3D();
+					
+					// Try to get original transform from SaveableComponent if it exists
+					if (USaveableActorComponent* RemovedSaveable = RemovedActor->FindComponentByClass<USaveableActorComponent>())
+					{
+						RemovedActorState.OriginalSpawnTransform = RemovedSaveable->OriginalTransform;
+					}
+				}
+				else
+				{
+					// Actor was destroyed - look up metadata from previous save
+					if (const FActorStateSaveData* PreviousState = PreviousActorStates.Find(BaselineId))
+					{
+						// Use metadata from previous save
+						RemovedActorState.ActorName = PreviousState->ActorName;
+						RemovedActorState.ActorClassPath = PreviousState->ActorClassPath;
+						RemovedActorState.OriginalSpawnTransform = PreviousState->OriginalSpawnTransform;
+						// Use last known location from previous save
+						RemovedActorState.Location = PreviousState->Location;
+						RemovedActorState.Rotation = PreviousState->Rotation;
+						RemovedActorState.Scale = PreviousState->Scale;
+					}
+					else
+					{
+						// No previous state found - this shouldn't happen if baseline was established correctly
+						UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Marked actor %s as removed but could not find previous metadata (baseline issue?)"), 
+							*BaselineId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+					}
+				}
+				
+				SaveGameInstance->ActorStates.Add(RemovedActorState);
+				RemovedCount++;
+			}
+		}
+	}
+	else
+	{
+		// No baseline exists - this should not happen during normal gameplay
+		// Baseline should only be created in CreateNewGameSave() when starting a new game
+		// If we're here, either:
+		// 1. We're loading a very old save without a baseline (shouldn't happen)
+		// 2. Something went wrong with save/load
+		// For safety, we'll establish a baseline, but log a warning
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] No baseline found in save - establishing new baseline (this should not happen during normal gameplay!)"));
+		SaveGameInstance->BaselineActorIds = CurrentActorIds;
+	}
+
+
 	// Set timestamp
 	FDateTime Now = FDateTime::Now();
 	SaveGameInstance->Timestamp = Now.ToString(TEXT("%Y.%m.%d %H:%M:%S"));
 
-	// Save to slot (include save name in filename)
-	FString SlotName = GetSlotName(SlotId, SaveName);
+	// Check if we need to save a temp save for level transition
+	if (!PendingLevelLoad.IsEmpty())
+	{
+		FString TempSlotName = TEXT("_TEMP_RESTORE_POSITION_");
+		UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Saving temp save with inventory entries: %d, hotbar slots: %d, equipment: %d"), 
+			SaveGameInstance->InventoryData.SerializedEntries.Len() > 0 ? 1 : 0,
+			SaveGameInstance->HotbarData.AssignedItemPaths.Num(),
+			SaveGameInstance->EquipmentData.SerializedEquippedItems.Num());
+		bool bTempSaveSuccess = UGameplayStatics::SaveGameToSlot(SaveGameInstance, TempSlotName, 0);
+		if (bTempSaveSuccess)
+		{
+			UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Temp save created successfully"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("[SaveSystem] Failed to create temp save!"));
+		}
+		
+			// Open the level
+			FString LevelToLoad = PendingLevelLoad;
+			PendingLevelLoad.Empty();
+			UGameplayStatics::OpenLevel(World, *LevelToLoad);
+			
+		return true;
+	}
+
+	// Save to slot (SlotName was already computed above when we tried to load the save)
 	bool bSuccess = UGameplayStatics::SaveGameToSlot(SaveGameInstance, SlotName, 0);
 	
 	if (bSuccess)
@@ -260,6 +613,40 @@ bool USaveSystemSubsystem::LoadGame(const FString& SlotId)
 		return false;
 	}
 
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Cannot load: World is null"));
+		return false;
+	}
+
+	// Fade to black before loading (hide items spawning and position changes)
+	APlayerController* PC = UGameplayStatics::GetPlayerController(World, 0);
+	AFirstPersonPlayerController* FirstPersonPC = Cast<AFirstPersonPlayerController>(PC);
+	if (FirstPersonPC && FirstPersonPC->LoadingFadeWidget)
+	{
+		// Fade out quickly (0.3 seconds) to hide the loading process
+		FirstPersonPC->LoadingFadeWidget->FadeOut(0.3f);
+		// Wait for fade to complete before proceeding with load
+		// We'll use a timer to delay the actual loading
+		const float FadeOutDuration = 0.3f;
+		FTimerHandle FadeOutTimer;
+		World->GetTimerManager().SetTimer(FadeOutTimer, [this, World, SlotId]()
+		{
+			LoadGameAfterFade(SlotId);
+		}, FadeOutDuration, false);
+		
+		return true; // Return early, actual load happens after fade
+	}
+	else
+	{
+		// No fade widget available, proceed with normal load
+		return LoadGameAfterFade(SlotId);
+	}
+}
+
+bool USaveSystemSubsystem::LoadGameAfterFade(const FString& SlotId)
+{
 	UWorld* World = GetWorld();
 	if (!World)
 	{
@@ -299,8 +686,11 @@ bool USaveSystemSubsystem::LoadGame(const FString& SlotId)
 		return false;
 	}
 	
-	UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Loaded save data - LevelPath: %s, SaveName: %s, Position: %s"), 
-		*SaveGameInstance->LevelPackagePath, *SaveGameInstance->SaveName, *SaveGameInstance->PlayerLocation.ToString());
+	// Set as current save data (the "running" save game)
+	CurrentSaveData = SaveGameInstance;
+	CurrentSlotId = SlotId;
+	CurrentSaveName = SaveGameInstance->SaveName;
+	
 
 	// Check if we need to load a different level
 	FString CurrentLevelPath;
@@ -388,17 +778,22 @@ bool USaveSystemSubsystem::LoadGame(const FString& SlotId)
 			UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Converted level name for OpenLevel: %s"), *LevelName);
 			
 			// Store save data for restoration after level loads
-			// Save position/rotation to temporary slot that will be loaded after level transition
+			// (We handle the level transition directly here, not through SaveGame())
 			FString TempSlotName = TEXT("_TEMP_RESTORE_POSITION_");
-			UGameplayStatics::SaveGameToSlot(SaveGameInstance, TempSlotName, 0);
-			
-			// Store the slot name in a static or game instance variable so it can be accessed after level loads
-			// We'll restore the position in the PlayerController's BeginPlay or PostLogin
+		bool bTempSaveSuccess = UGameplayStatics::SaveGameToSlot(SaveGameInstance, TempSlotName, 0);
+		if (!bTempSaveSuccess)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[SaveSystem] Failed to create temp save!"));
+		}
 			
 			// Open the level - player position will be restored after level loads
 			UGameplayStatics::OpenLevel(World, *LevelName);
 			
 			UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Opened level: %s - position will be restored after load"), *LevelName);
+			
+			// Clear PendingLevelLoad since we've already opened the level
+			// (PendingLevelLoad was only set for potential use, but we handle it directly here)
+			PendingLevelLoad.Empty();
 			
 			// Position restoration will be handled in FirstPersonPlayerController::BeginPlay
 			// by checking for the temp save file
@@ -407,7 +802,7 @@ bool USaveSystemSubsystem::LoadGame(const FString& SlotId)
 		}
 	}
 
-	// Same level - just restore player position
+	// Same level - restore all game state
 	// Get player character
 	APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(World, 0);
 	AFirstPersonCharacter* PlayerCharacter = Cast<AFirstPersonCharacter>(PlayerPawn);
@@ -418,10 +813,275 @@ bool USaveSystemSubsystem::LoadGame(const FString& SlotId)
 	}
 
 	// Restore player location and rotation
-	PlayerCharacter->SetActorLocation(SaveGameInstance->PlayerLocation);
-	PlayerCharacter->SetActorRotation(SaveGameInstance->PlayerRotation);
+	// Check if new save data exists (check if inventory data was saved as a proxy)
+	bool bHasNewSaveData = !SaveGameInstance->InventoryData.SerializedEntries.IsEmpty() || 
+		SaveGameInstance->HotbarData.AssignedItemPaths.Num() > 0 ||
+		SaveGameInstance->EquipmentData.SerializedEquippedItems.Num() > 0;
+	
+	FVector RestoreLocation;
+	FRotator RestoreRotation;
+	
+	if (bHasNewSaveData)
+	{
+		// Use new save data
+		RestoreLocation = SaveGameInstance->PlayerData.Location;
+		RestoreRotation = SaveGameInstance->PlayerData.Rotation;
+	}
+	else
+	{
+		// Fallback to legacy data
+		RestoreLocation = SaveGameInstance->PlayerLocation;
+		RestoreRotation = SaveGameInstance->PlayerRotation;
+	}
+	
+	PlayerCharacter->SetActorLocation(RestoreLocation);
+	PlayerCharacter->SetActorRotation(RestoreRotation);
 
-	UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Successfully loaded game from slot: %s"), *SlotName);
+	// Only restore new save data if it exists
+	if (!bHasNewSaveData)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] No new save data found, only restoring position"));
+		return true;
+	}
+
+	// Restore hunger stats
+	if (UHungerComponent* HungerComp = PlayerCharacter->GetHunger())
+	{
+		float SavedHunger = SaveGameInstance->PlayerData.CurrentHunger;
+		float CurrentHunger = HungerComp->GetCurrentHunger();
+		float HungerDelta = SavedHunger - CurrentHunger;
+		
+		// Use reflection to set CurrentHunger directly since RestoreHunger adds to current value
+		FProperty* CurrentHungerProp = UHungerComponent::StaticClass()->FindPropertyByName(TEXT("CurrentHunger"));
+		if (CurrentHungerProp)
+		{
+			float* CurrentHungerPtr = CurrentHungerProp->ContainerPtrToValuePtr<float>(HungerComp);
+			if (CurrentHungerPtr)
+			{
+				*CurrentHungerPtr = SavedHunger;
+				HungerComp->OnHungerChanged.Broadcast(SavedHunger, SaveGameInstance->PlayerData.MaxHunger);
+			}
+		}
+		else
+		{
+			// Fallback: use RestoreHunger if reflection fails
+			HungerComp->RestoreHunger(HungerDelta);
+		}
+		
+	}
+
+	// Restore inventory
+	if (UInventoryComponent* InventoryComp = PlayerCharacter->GetInventory())
+	{
+		TArray<FItemEntry> RestoredEntries = StorageSerialization::DeserializeStorageEntries(
+			SaveGameInstance->InventoryData.SerializedEntries);
+		
+		// Clear existing inventory and add restored entries
+		// Note: We need to remove items one by one since there's no Clear() method
+		TArray<FGuid> ItemIdsToRemove;
+		for (const FItemEntry& Entry : InventoryComp->GetEntries())
+		{
+			ItemIdsToRemove.Add(Entry.ItemId);
+		}
+		for (const FGuid& ItemId : ItemIdsToRemove)
+		{
+			InventoryComp->RemoveById(ItemId);
+		}
+
+		// Add restored entries
+		for (const FItemEntry& Entry : RestoredEntries)
+		{
+			InventoryComp->TryAdd(Entry);
+		}
+	}
+
+	// Restore hotbar
+	if (UHotbarComponent* HotbarComp = PlayerCharacter->GetHotbar())
+	{
+		// Clear all slots first
+		for (int32 i = 0; i < HotbarComp->GetNumSlots(); ++i)
+		{
+			HotbarComp->ClearSlot(i);
+		}
+
+		// Restore assigned item types
+		for (int32 i = 0; i < SaveGameInstance->HotbarData.AssignedItemPaths.Num() && 
+			i < HotbarComp->GetNumSlots(); ++i)
+		{
+			const FString& ItemPath = SaveGameInstance->HotbarData.AssignedItemPaths[i];
+			if (!ItemPath.IsEmpty())
+			{
+				UItemDefinition* ItemDef = LoadObject<UItemDefinition>(nullptr, *ItemPath);
+				if (ItemDef)
+				{
+					HotbarComp->AssignSlot(i, ItemDef);
+				}
+			}
+		}
+
+		// Restore active index (this will also select the item if available)
+		if (SaveGameInstance->HotbarData.ActiveIndex != INDEX_NONE && 
+			SaveGameInstance->HotbarData.ActiveIndex >= 0 && 
+			SaveGameInstance->HotbarData.ActiveIndex < HotbarComp->GetNumSlots())
+		{
+			HotbarComp->SelectSlot(SaveGameInstance->HotbarData.ActiveIndex, PlayerCharacter->GetInventory());
+		}
+	}
+
+	// Restore equipment (must be after inventory is restored)
+	if (UEquipmentComponent* EquipmentComp = PlayerCharacter->GetEquipment())
+	{
+		for (const FString& SerializedEquipment : SaveGameInstance->EquipmentData.SerializedEquippedItems)
+		{
+			EEquipmentSlot Slot;
+			FItemEntry Entry;
+			if (SaveSystemHelpers::DeserializeEquipmentSlot(SerializedEquipment, Slot, Entry))
+			{
+				// First, ensure the item is in inventory (it should be, but check)
+				bool bItemInInventory = false;
+				if (UInventoryComponent* InventoryComp = PlayerCharacter->GetInventory())
+				{
+					for (const FItemEntry& InvEntry : InventoryComp->GetEntries())
+					{
+						if (InvEntry.ItemId == Entry.ItemId)
+						{
+							bItemInInventory = true;
+							break;
+						}
+					}
+
+					// If not in inventory, add it
+					if (!bItemInInventory)
+					{
+						InventoryComp->TryAdd(Entry);
+					}
+
+					// Now equip it
+					FText ErrorText;
+					if (EquipmentComp->EquipFromInventory(Entry.ItemId, ErrorText))
+					{
+					}
+					else
+					{
+						UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Failed to restore equipment in slot %d: %s"), 
+							static_cast<int32>(Slot), *ErrorText.ToString());
+					}
+				}
+			}
+		}
+	}
+
+	// Restore all actor states
+	int32 ActorRestoredCount = 0;
+	int32 ActorNotFoundCount = 0;
+	int32 PhysicsRestoredCount = 0;
+	int32 StorageRestoredCount = 0;
+	
+	for (const FActorStateSaveData& ActorState : SaveGameInstance->ActorStates)
+	{
+		AActor* Actor = USaveableActorComponent::FindActorByGuid(World, ActorState.ActorId);
+		if (!Actor)
+		{
+			ActorNotFoundCount++;
+			UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Actor with ID %s not found in world"), 
+				*ActorState.ActorId.ToString(EGuidFormats::DigitsWithHyphensInBraces));
+			continue;
+		}
+
+		// Restore transform
+		Actor->SetActorLocation(ActorState.Location);
+		Actor->SetActorRotation(ActorState.Rotation);
+		Actor->SetActorScale3D(ActorState.Scale);
+
+		// Restore physics state if applicable
+		if (ActorState.bHasPhysics)
+		{
+			UPrimitiveComponent* PrimitiveComp = Actor->FindComponentByClass<UPrimitiveComponent>();
+			if (PrimitiveComp)
+			{
+				if (ActorState.bSimulatePhysics && !PrimitiveComp->IsSimulatingPhysics())
+				{
+					PrimitiveComp->SetSimulatePhysics(true);
+				}
+
+				if (ActorState.LinearVelocity.SizeSquared() > KINDA_SMALL_NUMBER ||
+					ActorState.AngularVelocity.SizeSquared() > KINDA_SMALL_NUMBER)
+				{
+					PrimitiveComp->SetPhysicsLinearVelocity(ActorState.LinearVelocity);
+					PrimitiveComp->SetPhysicsAngularVelocityInRadians(ActorState.AngularVelocity);
+				}
+				PhysicsRestoredCount++;
+			}
+		}
+
+		// Restore storage state if applicable
+		if (ActorState.bHasStorage)
+		{
+			UStorageComponent* StorageComp = Actor->FindComponentByClass<UStorageComponent>();
+			if (StorageComp)
+			{
+				TArray<FItemEntry> RestoredEntries = StorageSerialization::DeserializeStorageEntries(
+					ActorState.SerializedStorageEntries);
+				
+				// Clear existing storage
+				TArray<FGuid> ItemIdsToRemove;
+				for (const FItemEntry& Entry : StorageComp->GetEntries())
+				{
+					ItemIdsToRemove.Add(Entry.ItemId);
+				}
+				for (const FGuid& ItemId : ItemIdsToRemove)
+				{
+					StorageComp->RemoveById(ItemId);
+				}
+
+				// Restore entries
+				int32 AddedCount = 0;
+				for (const FItemEntry& Entry : RestoredEntries)
+				{
+					if (StorageComp->TryAdd(Entry))
+					{
+						AddedCount++;
+					}
+				}
+
+				StorageComp->MaxVolume = ActorState.StorageMaxVolume;
+				StorageRestoredCount++;
+			}
+		}
+
+		// Restore ItemEntry data for ItemPickup actors (includes CustomData like UsesRemaining)
+		if (AItemPickup* ItemPickup = Cast<AItemPickup>(Actor))
+		{
+			if (!ActorState.SerializedItemEntry.IsEmpty())
+			{
+				FItemEntry ItemEntry;
+				if (SaveSystemHelpers::DeserializeItemEntry(ActorState.SerializedItemEntry, ItemEntry))
+				{
+					ItemPickup->SetItemEntry(ItemEntry);
+				}
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Failed to deserialize ItemEntry for actor %s"), 
+						*Actor->GetName());
+				}
+			}
+		}
+
+		ActorRestoredCount++;
+	}
+	
+	
+	// Fade in after loading completes (for same-level loads)
+	// Add a small delay to ensure everything is visually settled before fading in
+	if (World)
+	{
+		FTimerHandle FadeInTimer;
+		World->GetTimerManager().SetTimer(FadeInTimer, [this]()
+		{
+			FadeInAfterLoad();
+		}, 0.2f, false); // 0.2 second delay before fading in
+	}
+	
 	return true;
 }
 
@@ -459,11 +1119,7 @@ bool USaveSystemSubsystem::DeleteSave(const FString& SlotId)
 		}
 	}
 	
-	if (bSuccess)
-	{
-		UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Successfully deleted save slot: %s"), *SlotName);
-	}
-	else
+	if (!bSuccess)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Failed to delete save slot: %s"), *SlotName);
 	}
@@ -563,13 +1219,9 @@ TArray<FSaveSlotInfo> USaveSystemSubsystem::GetAllSaveSlots() const
 	// Parameters: OutFileNames, StartDirectory, FileExtension, bFiles, bDirectories, bRecursive
 	FileManager.FindFiles(SaveFiles, *SaveDir, TEXT("*.sav"));
 
-	UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Searching in directory: %s"), *SaveDir);
-	UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Found %d save files using FindFiles"), SaveFiles.Num());
-
 	// If FindFiles still returns 0, try using IterateDirectory with a visitor
 	if (SaveFiles.Num() == 0)
 	{
-		UE_LOG(LogTemp, Display, TEXT("[SaveSystem] FindFiles returned 0 files, trying directory iteration"));
 		
 		// Manually iterate through directory to find all .sav files
 		struct FSaveFileVisitor : public IPlatformFile::FDirectoryVisitor
@@ -591,8 +1243,6 @@ TArray<FSaveSlotInfo> USaveSystemSubsystem::GetAllSaveSlots() const
 						FString RelativePath = FilePath;
 						FPaths::MakePathRelativeTo(RelativePath, *(SaveDirPath / TEXT("")));
 						FoundFiles.Add(RelativePath);
-						UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Found save file via visitor: %s (relative: %s)"), 
-							*FilePath, *RelativePath);
 					}
 				}
 				return true;
@@ -602,7 +1252,6 @@ TArray<FSaveSlotInfo> USaveSystemSubsystem::GetAllSaveSlots() const
 		FSaveFileVisitor Visitor(SaveFiles, SaveDir);
 		FileManager.IterateDirectory(*SaveDir, Visitor);
 		
-		UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Found %d save files via directory iteration"), SaveFiles.Num());
 	}
 
 	// Process each save file
@@ -611,19 +1260,15 @@ TArray<FSaveSlotInfo> USaveSystemSubsystem::GetAllSaveSlots() const
 		// Get the base filename without extension and path
 		FString FileName = FPaths::GetBaseFilename(SaveFile);
 		
-		UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Processing save file: %s (base filename: %s)"), *SaveFile, *FileName);
 		
 		// Check if it's a save slot (starts with "SaveSlot_")
 		if (FileName.StartsWith(TEXT("SaveSlot_")))
 		{
 			FString SlotId = GetSlotIdFromSlotName(FileName);
-			UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Extracted slot ID: %s from filename: %s"), *SlotId, *FileName);
 			
 			FSaveSlotInfo Info = GetSaveSlotInfo(SlotId);
 			if (Info.bExists)
 			{
-				UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Found valid save slot: %s (Name: %s, Timestamp: %s)"), 
-					*SlotId, *Info.SaveName, *Info.Timestamp);
 				SaveSlots.Add(Info);
 			}
 			else
@@ -633,11 +1278,9 @@ TArray<FSaveSlotInfo> USaveSystemSubsystem::GetAllSaveSlots() const
 		}
 		else
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("[SaveSystem] File does not start with 'SaveSlot_': %s"), *FileName);
 		}
 	}
 
-	UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Returning %d valid save slots"), SaveSlots.Num());
 
 	// Sort by timestamp (most recent first)
 	SaveSlots.Sort([](const FSaveSlotInfo& A, const FSaveSlotInfo& B) {
@@ -677,7 +1320,10 @@ bool USaveSystemSubsystem::CreateNewGameSave(const FString& SlotId, const FStrin
 		return false;
 	}
 
-	// Create save game object
+	// Get save slot name
+	FString SlotName = GetSlotName(SlotId, SaveName);
+	
+	// Create new save game object - this is for a new game, so we'll create a new baseline
 	UGameSaveData* SaveGameInstance = Cast<UGameSaveData>(UGameplayStatics::CreateSaveGameObject(UGameSaveData::StaticClass()));
 	if (!SaveGameInstance)
 	{
@@ -685,12 +1331,68 @@ bool USaveSystemSubsystem::CreateNewGameSave(const FString& SlotId, const FStrin
 		return false;
 	}
 
+	// Set as current save data (the "running" save game)
+	CurrentSaveData = SaveGameInstance;
+	CurrentSlotId = SlotId;
+	CurrentSaveName = SaveName.IsEmpty() ? FString::Printf(TEXT("Save %s"), *SlotId) : SaveName;
+
 	// Save player location and rotation (current spawn location)
 	SaveGameInstance->PlayerLocation = PlayerCharacter->GetActorLocation();
 	SaveGameInstance->PlayerRotation = PlayerCharacter->GetActorRotation();
-	SaveGameInstance->SaveName = SaveName.IsEmpty() ? FString::Printf(TEXT("Save %s"), *SlotId) : SaveName;
+	SaveGameInstance->SaveName = CurrentSaveName;
+
+	// Save player data (same as SaveGame)
+	SaveGameInstance->PlayerData.Location = PlayerCharacter->GetActorLocation();
+	SaveGameInstance->PlayerData.Rotation = PlayerCharacter->GetActorRotation();
 	
-	// Save current level package path (should be MainMap for new games)
+	// Save hunger stats
+	if (UHungerComponent* HungerComp = PlayerCharacter->GetHunger())
+	{
+		SaveGameInstance->PlayerData.CurrentHunger = HungerComp->GetCurrentHunger();
+		SaveGameInstance->PlayerData.MaxHunger = HungerComp->GetMaxHunger();
+	}
+
+	// Save inventory
+	if (UInventoryComponent* InventoryComp = PlayerCharacter->GetInventory())
+	{
+		SaveGameInstance->InventoryData.SerializedEntries = 
+			StorageSerialization::SerializeStorageEntries(InventoryComp->GetEntries());
+	}
+
+	// Save hotbar
+	if (UHotbarComponent* HotbarComp = PlayerCharacter->GetHotbar())
+	{
+		SaveGameInstance->HotbarData.ActiveIndex = HotbarComp->GetActiveIndex();
+		SaveGameInstance->HotbarData.AssignedItemPaths.Empty();
+		
+		for (int32 i = 0; i < HotbarComp->GetNumSlots(); ++i)
+		{
+			const FHotbarSlot& Slot = HotbarComp->GetSlot(i);
+			if (Slot.AssignedType)
+			{
+				SaveGameInstance->HotbarData.AssignedItemPaths.Add(Slot.AssignedType->GetPathName());
+			}
+			else
+			{
+				SaveGameInstance->HotbarData.AssignedItemPaths.Add(FString()); // Empty string for unassigned slots
+			}
+		}
+	}
+
+	// Save equipment
+	if (UEquipmentComponent* EquipmentComp = PlayerCharacter->GetEquipment())
+	{
+		SaveGameInstance->EquipmentData.SerializedEquippedItems.Empty();
+		TMap<EEquipmentSlot, FItemEntry> EquippedItems = EquipmentComp->GetAllEquippedItems();
+		
+		for (const auto& Pair : EquippedItems)
+		{
+			FString Serialized = SaveSystemHelpers::SerializeEquipmentSlot(Pair.Key, Pair.Value);
+			SaveGameInstance->EquipmentData.SerializedEquippedItems.Add(Serialized);
+		}
+	}
+	
+	// Save current level package path (same logic as SaveGame)
 	FString LevelPackagePath;
 	if (ULevel* PersistentLevel = World->GetCurrentLevel())
 	{
@@ -743,18 +1445,111 @@ bool USaveSystemSubsystem::CreateNewGameSave(const FString& SlotId, const FStrin
 	}
 	
 	SaveGameInstance->LevelPackagePath = NormalizedPath;
+	UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Creating new game save - LevelPath: %s"), *NormalizedPath);
+
+	// Establish baseline from current world (all actors are part of the baseline for a new game)
+	// Collect all current actors to establish baseline
+	TArray<FGuid> CurrentActorIds;
+	SaveGameInstance->ActorStates.Empty();
+	
+	// Iterate through all actors and save their states (same logic as SaveGame)
+	for (TActorIterator<AActor> ActorIterator(World); ActorIterator; ++ActorIterator)
+	{
+		AActor* Actor = *ActorIterator;
+		if (!Actor)
+		{
+			continue;
+		}
+
+		// Check if actor has SaveableActorComponent
+		USaveableActorComponent* SaveableComp = Actor->FindComponentByClass<USaveableActorComponent>();
+		if (!SaveableComp)
+		{
+			continue;
+		}
+
+		FGuid ActorId = SaveableComp->GetPersistentId();
+		if (!ActorId.IsValid())
+		{
+			continue;
+		}
+
+		// Add to baseline (all actors are part of the baseline for a new game)
+		CurrentActorIds.Add(ActorId);
+
+		// Create actor state data
+		FActorStateSaveData ActorState;
+		ActorState.ActorId = ActorId;
+		ActorState.bExists = true;
+		
+		// Save actor identification metadata (for fallback matching)
+		ActorState.ActorName = Actor->GetName();
+		ActorState.ActorClassPath = Actor->GetClass()->GetPathName();
+		
+		// Get OriginalTransform - if not set yet, use current transform
+		FTransform OriginalTransformToSave = SaveableComp->OriginalTransform;
+		if (OriginalTransformToSave.GetLocation().IsNearlyZero())
+		{
+			OriginalTransformToSave = Actor->GetActorTransform();
+			SaveableComp->OriginalTransform = OriginalTransformToSave;
+		}
+		ActorState.OriginalSpawnTransform = OriginalTransformToSave;
+		
+		// For a new game, all actors are part of the baseline (not new objects)
+		ActorState.bIsNewObject = false;
+		
+		// Save transform if enabled
+		if (SaveableComp->bSaveTransform)
+		{
+			ActorState.Location = Actor->GetActorLocation();
+			ActorState.Rotation = Actor->GetActorRotation();
+			ActorState.Scale = Actor->GetActorScale3D();
+		}
+
+		// Check for physics component
+		UPrimitiveComponent* PrimitiveComp = Actor->FindComponentByClass<UPrimitiveComponent>();
+		if (PrimitiveComp && PrimitiveComp->IsSimulatingPhysics())
+		{
+			if (SaveSystemHelpers::ShouldSavePhysicsObject(Actor, SaveableComp->OriginalTransform))
+			{
+				ActorState.bHasPhysics = true;
+				ActorState.bSimulatePhysics = true;
+				
+				if (SaveableComp->bSavePhysicsState)
+				{
+					ActorState.LinearVelocity = PrimitiveComp->GetPhysicsLinearVelocity();
+					ActorState.AngularVelocity = PrimitiveComp->GetPhysicsAngularVelocityInRadians();
+				}
+			}
+		}
+
+		// Check for storage component
+		UStorageComponent* StorageComp = Actor->FindComponentByClass<UStorageComponent>();
+		if (StorageComp)
+		{
+			ActorState.bHasStorage = true;
+			TArray<FItemEntry> StorageEntries = StorageComp->GetEntries();
+			ActorState.SerializedStorageEntries = StorageSerialization::SerializeStorageEntries(StorageEntries);
+			ActorState.StorageMaxVolume = StorageComp->MaxVolume;
+		}
+
+		SaveGameInstance->ActorStates.Add(ActorState);
+	}
+	
+	// Establish baseline (all current actors are part of the baseline for a new game)
+	SaveGameInstance->BaselineActorIds = CurrentActorIds;
+	UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Established new baseline with %d actors"), SaveGameInstance->BaselineActorIds.Num());
 	
 	// Set timestamp
 	FDateTime Now = FDateTime::Now();
 	SaveGameInstance->Timestamp = Now.ToString(TEXT("%Y.%m.%d %H:%M:%S"));
 
-	// Save to slot (include save name in filename)
-	FString SlotName = GetSlotName(SlotId, SaveName);
+	// Save to slot (SlotName was already computed above)
 	bool bSuccess = UGameplayStatics::SaveGameToSlot(SaveGameInstance, SlotName, 0);
 	
 	if (bSuccess)
 	{
-		UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Successfully created new game save to slot: %s (Level: %s)"), *SlotName, *LevelPackagePath);
+		UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Successfully created new game save to slot: %s (Level: %s)"), *SlotName, *NormalizedPath);
 	}
 	else
 	{
@@ -762,6 +1557,24 @@ bool USaveSystemSubsystem::CreateNewGameSave(const FString& SlotId, const FStrin
 	}
 
 	return bSuccess;
+}
+
+void USaveSystemSubsystem::FadeInAfterLoad()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// Fade in after loading completes (for same-level loads)
+	APlayerController* PC = UGameplayStatics::GetPlayerController(World, 0);
+	AFirstPersonPlayerController* FirstPersonPC = Cast<AFirstPersonPlayerController>(PC);
+	if (FirstPersonPC && FirstPersonPC->LoadingFadeWidget)
+	{
+		// Fade in smoothly (1.0 second) to reveal the loaded game
+		FirstPersonPC->LoadingFadeWidget->FadeIn(1.0f);
+	}
 }
 
 void USaveSystemSubsystem::CheckAndCreatePendingNewGameSave()
@@ -817,7 +1630,6 @@ void USaveSystemSubsystem::CheckAndCreatePendingNewGameSave()
 						FString PendingSlotName = FString::Printf(TEXT("_NEWGAME_%s"), *SlotId);
 						UGameplayStatics::DeleteGameInSlot(PendingSlotName, 0);
 						
-						UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Created new game save: %s"), *SlotId);
 					}
 				}, 0.5f, false); // 0.5 second delay to ensure player is spawned
 				

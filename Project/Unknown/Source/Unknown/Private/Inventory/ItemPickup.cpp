@@ -1,5 +1,6 @@
 ﻿#include "Inventory/ItemPickup.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SaveableActorComponent.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Inventory/ItemDefinition.h"
 #include "Inventory/ItemTypes.h"
@@ -16,6 +17,9 @@ AItemPickup::AItemPickup(const FObjectInitializer& ObjectInitializer)
 {
 	Mesh = ObjectInitializer.CreateDefaultSubobject<UStaticMeshComponent>(this, TEXT("Mesh"));
 	SetRootComponent(Mesh);
+	
+	// Add SaveableActorComponent so item pickups are automatically saved
+	SaveableComponent = ObjectInitializer.CreateDefaultSubobject<USaveableActorComponent>(this, TEXT("SaveableComponent"));
 	if (Mesh)
 	{
 		// Spawned pickups should simulate and collide by default so they behave like physical props
@@ -231,6 +235,13 @@ AItemPickup* AItemPickup::SpawnDropped(UWorld* World, const AActor* ContextActor
     if (Pickup)
     {
         Pickup->SetItemDef(Def);
+        
+        // Ensure SaveableComponent exists (should already be added in constructor, but check)
+        if (!Pickup->SaveableComponent)
+        {
+            Pickup->SaveableComponent = NewObject<USaveableActorComponent>(Pickup);
+            Pickup->SaveableComponent->RegisterComponent();
+        }
     }
     return Pickup;
 }
@@ -266,6 +277,13 @@ AItemPickup* AItemPickup::DropItemToWorld(UWorld* World, const AActor* ContextAc
     
     // Set the full item entry (includes metadata)
     Pickup->SetItemEntry(Entry);
+    
+    // Ensure SaveableComponent exists (should already be added in constructor, but check)
+    if (!Pickup->SaveableComponent)
+    {
+        Pickup->SaveableComponent = NewObject<USaveableActorComponent>(Pickup);
+        Pickup->SaveableComponent->RegisterComponent();
+    }
     
     // Configure physics for dropped items: gravity ON, interactable channel BLOCK
     if (UStaticMeshComponent* ItemMesh = Pickup->Mesh)

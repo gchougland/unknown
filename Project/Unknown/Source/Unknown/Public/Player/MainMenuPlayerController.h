@@ -21,5 +21,10 @@ protected:
 	// Main menu widget
 	UPROPERTY()
 	TObjectPtr<UMainMenuWidget> MainMenuWidget;
+
+public:
+	// UI: loading fade widget (fullscreen black overlay for transitions)
+	UPROPERTY()
+	TObjectPtr<class ULoadingFadeWidget> LoadingFadeWidget;
 };
 
