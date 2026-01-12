@@ -17,7 +17,9 @@
 #include "Components/SceneComponent.h"
 #include "Player/FirstPersonPlayerController.h"
 #include "UI/InventoryScreenWidget.h"
+#include "UI/MessageLogSubsystem.h"
 #include "GameFramework/PlayerController.h"
+#include "Engine/Engine.h"
 
 AFirstPersonCharacter::AFirstPersonCharacter(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -653,37 +655,35 @@ void AFirstPersonCharacter::DropHeldItemAtLocation()
 		Params.AddIgnoredActor(HeldItemActor);
 	}
 
-	FVector DropLocation;
+	// Calculate initial drop location and store the surface normal
+	FVector InitialDropLocation;
+	FVector SurfaceNormal;
 	FRotator DropRotation = FRotator(0.f, CamRot.Yaw, 0.f);
-	bool bHit = false;
-
+	
 	if (World->LineTraceSingleByChannel(Hit, CamLoc, TraceEnd, ECC_Visibility, Params))
 	{
-		bHit = true;
 		const float HitDistance = (Hit.ImpactPoint - CamLoc).Size();
+		
+		// Store the surface normal for offsetting spawn location
+		SurfaceNormal = Hit.Normal;
 		
 		// If hit is far away, offset back to prevent clipping
 		if (HitDistance > 400.f)
 		{
 			const float OffsetDistance = 30.f; // ~1 foot in cm
-			DropLocation = Hit.ImpactPoint - Forward * OffsetDistance;
+			InitialDropLocation = Hit.ImpactPoint - Forward * OffsetDistance;
 		}
 		else
 		{
-			DropLocation = Hit.ImpactPoint;
+			InitialDropLocation = Hit.ImpactPoint;
 		}
 	}
 	else
 	{
-		// No hit - drop at max distance
-		DropLocation = TraceEnd;
+		// No hit - use max distance and default to up vector for normal
+		InitialDropLocation = TraceEnd;
+		SurfaceNormal = FVector::UpVector;
 	}
-
-	// Create base transform at drop location
-	const FTransform BaseTransform(DropRotation, DropLocation, FVector(1.f, 1.f, 1.f));
-	
-	// Apply DefaultDropTransform on top
-	const FTransform FinalTransform = HeldItemEntry.Def->DefaultDropTransform * BaseTransform;
 
 	// Check for PickupActorClass override
 	TSubclassOf<AActor> ActorClass = AItemPickup::StaticClass();
@@ -698,56 +698,88 @@ void AFirstPersonCharacter::DropHeldItemAtLocation()
 		}
 	}
 
-	// Spawn the pickup using deferred spawning to set up storage before collision check
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.Owner = this;
-	SpawnParams.Instigator = this;
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding;
+	// Try to spawn at increasing offsets along the surface normal
+	const float MaxOffset = 100.f;
+	const float OffsetStep = 8.f; // Small increments for precision
+	AItemPickup* DroppedPickup = nullptr;
+	bool bSpawnSucceeded = false;
 
-	AItemPickup* DroppedPickup = World->SpawnActorDeferred<AItemPickup>(ActorClass, FinalTransform, this, this, ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding);
-	if (DroppedPickup)
+	for (float CurrentOffset = 0.f; CurrentOffset <= MaxOffset; CurrentOffset += OffsetStep)
 	{
-		// Set the full item entry (includes metadata) before finishing spawn
-		DroppedPickup->SetItemEntry(EntryToDrop);
+		// Calculate spawn location with offset along the normal
+		const FVector SpawnLocation = InitialDropLocation + SurfaceNormal * CurrentOffset;
+		
+		// Create base transform at spawn location
+		const FTransform BaseTransform(DropRotation, SpawnLocation, FVector(1.f, 1.f, 1.f));
+		
+		// Apply DefaultDropTransform on top
+		const FTransform SpawnTransform = HeldItemEntry.Def->DefaultDropTransform * BaseTransform;
 
-		// If this is a storage container, restore its storage data before finishing spawn
-		if (UStorageComponent* StorageComp = DroppedPickup->FindComponentByClass<UStorageComponent>())
+		// Attempt to spawn using deferred spawning
+		DroppedPickup = World->SpawnActorDeferred<AItemPickup>(ActorClass, SpawnTransform, this, this, ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButDontSpawnIfColliding);
+		if (DroppedPickup)
 		{
-			StorageSerialization::RestoreStorageFromItemEntry(EntryToDrop, StorageComp);
+			// Set the full item entry (includes metadata) before finishing spawn
+			DroppedPickup->SetItemEntry(EntryToDrop);
+
+			// If this is a storage container, restore its storage data before finishing spawn
+			if (UStorageComponent* StorageComp = DroppedPickup->FindComponentByClass<UStorageComponent>())
+			{
+				StorageSerialization::RestoreStorageFromItemEntry(EntryToDrop, StorageComp);
+			}
+
+			// Finish spawning (this will perform collision check)
+			DroppedPickup->FinishSpawning(SpawnTransform);
+
+			// Check if spawn succeeded by validating the actor
+			if (IsValid(DroppedPickup))
+			{
+				// Spawn succeeded - configure physics and break out of loop
+				if (UStaticMeshComponent* ItemMesh = DroppedPickup->Mesh)
+				{
+					ItemMesh->SetSimulatePhysics(true);
+					ItemMesh->SetEnableGravity(true);
+					ItemMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+					ItemMesh->SetCollisionObjectType(ECC_WorldDynamic);
+					ItemMesh->SetCollisionResponseToAllChannels(ECR_Block);
+					ItemMesh->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Block);
+				}
+
+				UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] DropHeldItemAtLocation: Dropped %s at %s (offset: %.1f)"), 
+					*GetNameSafe(EntryToDrop.Def), *SpawnTransform.GetLocation().ToString(), CurrentOffset);
+				bSpawnSucceeded = true;
+				break;
+			}
+			else
+			{
+				// Spawn failed - actor was invalidated by FinishSpawning, try next offset
+				DroppedPickup = nullptr;
+			}
 		}
-
-		// Finish spawning (this will perform collision check)
-		DroppedPickup->FinishSpawning(FinalTransform);
-
-		// Configure physics for dropped items: gravity ON, interactable channel BLOCK
-		if (UStaticMeshComponent* ItemMesh = DroppedPickup->Mesh)
-		{
-			ItemMesh->SetSimulatePhysics(true);
-			ItemMesh->SetEnableGravity(true);
-			ItemMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-			ItemMesh->SetCollisionObjectType(ECC_WorldDynamic);
-			ItemMesh->SetCollisionResponseToAllChannels(ECR_Block);
-			ItemMesh->SetCollisionResponseToChannel(ECC_GameTraceChannel1, ECR_Block);
-		}
-
-		UE_LOG(LogTemp, Display, TEXT("[FirstPersonCharacter] DropHeldItemAtLocation: Dropped %s at %s"), 
-			*GetNameSafe(EntryToDrop.Def), *FinalTransform.GetLocation().ToString());
 	}
-	else
+
+	// Check if spawn succeeded
+	if (!bSpawnSucceeded || !IsValid(DroppedPickup))
 	{
-		UE_LOG(LogTemp, Error, TEXT("[FirstPersonCharacter] DropHeldItemAtLocation: Failed to spawn pickup"));
+		// All spawn attempts failed - restore item to inventory and show error message
+		UE_LOG(LogTemp, Warning, TEXT("[FirstPersonCharacter] DropHeldItemAtLocation: Failed to spawn pickup after trying offsets up to %.1f units"), MaxOffset);
+		
+		// Show error message to player
+		if (UMessageLogSubsystem* MsgLog = GEngine ? GEngine->GetEngineSubsystem<UMessageLogSubsystem>() : nullptr)
+		{
+			MsgLog->PushMessage(FText::FromString(TEXT("Failed to place item")));
+		}
+		
+		// Restore item to inventory
+		PutHeldItemBack();
 		return;
 	}
 
-	// Clear held item state BEFORE destroying actor
-	// Store the entry temporarily since we need it for the check below
-	FItemEntry DroppedEntry = EntryToDrop;
+	// Spawn succeeded - clear held item state
 	HeldItemEntry = FItemEntry();
 	HeldItemActor->Destroy();
 	HeldItemActor = nullptr;
 
-	// IMPORTANT: The item was already removed from inventory when we held it,
-	// so we should NOT try to put it back. The drop is complete.
 	// Refresh UI
 	RefreshUIIfInventoryOpen();
 }
