@@ -2,6 +2,7 @@
 
 #include "Player/FirstPersonCharacter.h"
 #include "Components/PhysicsInteractionComponent.h"
+#include "Components/PhysicsObjectSocketComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
 #include "Engine/EngineTypes.h"
@@ -114,7 +115,22 @@ struct FPlayerControllerInteractionHandler
 						if (PC->GetWorld() && PC->GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
 						{
 							UPrimitiveComponent* Prim = Hit.GetComponent();
-							if (Prim && Prim->IsSimulatingPhysics())
+							bool bWasSocketed = false;
+							
+							// Check if the hit actor is a socketed ItemPickup - if so, release it from socket first
+							if (AItemPickup* HitItemPickup = Cast<AItemPickup>(Hit.GetActor()))
+							{
+								if (UPhysicsObjectSocketComponent* SocketComp = UPhysicsObjectSocketComponent::FindSocketWithItem(HitItemPickup, PC->GetWorld()))
+								{
+									// Item is socketed - release it from the socket (this re-enables physics)
+									SocketComp->ReleaseItem();
+									bWasSocketed = true;
+									// Continue to pick it up with physics (don't return)
+								}
+							}
+
+							// Pick up if physics is enabled, OR if we just released it from a socket
+							if (Prim && (Prim->IsSimulatingPhysics() || bWasSocketed))
 							{
 								// Prefer authored socket "HoldPivot"; fallback to Center of Mass
 								FVector PivotWorld = Hit.ImpactPoint;

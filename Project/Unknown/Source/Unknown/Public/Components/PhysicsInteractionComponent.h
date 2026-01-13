@@ -34,6 +34,8 @@ public:
 	void Release();
 	void Throw(const FVector& Direction);
 	bool IsHolding() const { return HeldComponent.IsValid(); }
+	UPrimitiveComponent* GetHeldComponent() const { return HeldComponent.Get(); }
+	bool IsHoldingComponent(UPrimitiveComponent* Component) const { return HeldComponent.Get() == Component; }
 
 	// Rotation input accumulation for held object (processed externally per-frame)
 	void SetRotateHeld(bool bInRotate) { bWantsRotateHeld = bInRotate; }
