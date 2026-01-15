@@ -1,4 +1,4 @@
-﻿// Basic First Person Player Controller for TDD
+// Basic First Person Player Controller for TDD
 #pragma once
 
 #include "CoreMinimal.h"
@@ -178,6 +178,10 @@ protected:
 
     // Cached UI-open state used to quickly gate inputs without dereferencing widgets
     bool bInventoryUIOpen = false;
+
+public:
+    // Flag to track if player is using a computer
+    bool bInComputerMode = false;
 
 public:
     // UI: loading fade widget (fullscreen black overlay for transitions)

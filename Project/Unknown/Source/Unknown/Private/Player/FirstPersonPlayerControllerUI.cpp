@@ -248,6 +248,12 @@ struct FPlayerControllerUIManager
 			return;
 		}
 
+		// Don't allow inventory toggle when in computer mode
+		if (PC->bInComputerMode)
+		{
+			return;
+		}
+
 		// Lazy-create inventory widget
 		if (!PC->InventoryScreen)
 		{

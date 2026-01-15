@@ -34,7 +34,8 @@ struct FPlayerControllerTickHandler
 		const bool bInventoryOpen = (PC->InventoryScreen && PC->InventoryScreen->IsOpen());
 		PC->bInventoryUIOpen = bInventoryOpen;
 		FVector2D MoveAxis(0.f, 0.f);
-		if (!bInventoryOpen)
+		// Don't process movement if inventory is open or if in computer mode
+		if (!bInventoryOpen && !PC->bInComputerMode)
 		{
 			if (PC->IsInputKeyDown(EKeys::W)) MoveAxis.X += 1.f;
 			if (PC->IsInputKeyDown(EKeys::S)) MoveAxis.X -= 1.f;
@@ -72,7 +73,8 @@ struct FPlayerControllerTickHandler
 		}
 
 		// Toggle inventory screen with Tab (primary) or I (fallback)
-		if (PC->WasInputKeyJustPressed(EKeys::Tab) || PC->WasInputKeyJustPressed(EKeys::I))
+		// Don't allow inventory toggle when in computer mode
+		if (!PC->bInComputerMode && (PC->WasInputKeyJustPressed(EKeys::Tab) || PC->WasInputKeyJustPressed(EKeys::I)))
 		{
 			PC->ToggleInventory();
 		}

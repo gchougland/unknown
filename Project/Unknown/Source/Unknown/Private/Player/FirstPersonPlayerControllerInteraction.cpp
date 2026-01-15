@@ -4,6 +4,7 @@
 #include "Components/PhysicsInteractionComponent.h"
 #include "Components/PhysicsObjectSocketComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Computers/ComputerBase.h"
 #include "Engine/World.h"
 #include "Engine/EngineTypes.h"
 #include "UI/DropProgressBarWidget.h"
@@ -98,27 +99,47 @@ struct FPlayerControllerInteractionHandler
 				AFirstPersonCharacter* C = Cast<AFirstPersonCharacter>(PC->GetPawn());
 				if (C && !PC->bInventoryUIOpen)
 				{
+					// Perform a line trace from the camera to check for interactables
+					FVector CamLoc; FRotator CamRot;
+					PC->GetPlayerViewPoint(CamLoc, CamRot);
+					const FVector Dir = CamRot.Vector();
+					const float MaxDist = 500.0f; // Max interaction distance
+					const FVector Start = CamLoc;
+					const FVector End = Start + Dir * MaxDist;
+
+					FHitResult Hit;
+					FCollisionQueryParams Params(SCENE_QUERY_STAT(PhysicsInteract), false);
+					Params.AddIgnoredActor(C);
+
+					if (PC->GetWorld() && PC->GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
+					{
+						// Check if hit actor is a computer
+						if (AComputerBase* Computer = Cast<AComputerBase>(Hit.GetActor()))
+						{
+							// Enter computer mode
+							Computer->EnterComputerMode(PC);
+							PC->bInstantUseExecuted = true;
+							return;
+						}
+					}
+
+					// Continue with physics interaction check
 					if (UPhysicsInteractionComponent* PIC = C->FindComponentByClass<UPhysicsInteractionComponent>())
 					{
-						// Perform a line trace from the camera to try to pick a physics object
-						FVector CamLoc; FRotator CamRot;
-						PC->GetPlayerViewPoint(CamLoc, CamRot);
-						const FVector Dir = CamRot.Vector();
-						const float MaxDist = PIC->GetMaxPickupDistance();
-						const FVector Start = CamLoc;
-						const FVector End = Start + Dir * MaxDist;
+						const float MaxPickupDist = PIC->GetMaxPickupDistance();
+						const FVector PickupEnd = Start + Dir * MaxPickupDist;
 
-						FHitResult Hit;
-						FCollisionQueryParams Params(SCENE_QUERY_STAT(PhysicsInteract), false);
-						Params.AddIgnoredActor(C);
+						FHitResult PhysicsHit;
+						FCollisionQueryParams PhysicsParams(SCENE_QUERY_STAT(PhysicsInteract), false);
+						PhysicsParams.AddIgnoredActor(C);
 
-						if (PC->GetWorld() && PC->GetWorld()->LineTraceSingleByChannel(Hit, Start, End, ECollisionChannel::ECC_GameTraceChannel1, Params))
+						if (PC->GetWorld() && PC->GetWorld()->LineTraceSingleByChannel(PhysicsHit, Start, PickupEnd, ECollisionChannel::ECC_GameTraceChannel1, PhysicsParams))
 						{
-							UPrimitiveComponent* Prim = Hit.GetComponent();
+							UPrimitiveComponent* Prim = PhysicsHit.GetComponent();
 							bool bWasSocketed = false;
 							
 							// Check if the hit actor is a socketed ItemPickup - if so, release it from socket first
-							if (AItemPickup* HitItemPickup = Cast<AItemPickup>(Hit.GetActor()))
+							if (AItemPickup* HitItemPickup = Cast<AItemPickup>(PhysicsHit.GetActor()))
 							{
 								if (UPhysicsObjectSocketComponent* SocketComp = UPhysicsObjectSocketComponent::FindSocketWithItem(HitItemPickup, PC->GetWorld()))
 								{
@@ -133,7 +154,7 @@ struct FPlayerControllerInteractionHandler
 							if (Prim && (Prim->IsSimulatingPhysics() || bWasSocketed))
 							{
 								// Prefer authored socket "HoldPivot"; fallback to Center of Mass
-								FVector PivotWorld = Hit.ImpactPoint;
+								FVector PivotWorld = PhysicsHit.ImpactPoint;
 								if (UStaticMeshComponent* SMC = Cast<UStaticMeshComponent>(Prim))
 								{
 									static const FName HoldPivotSocket(TEXT("HoldPivot"));
@@ -143,7 +164,7 @@ struct FPlayerControllerInteractionHandler
 									}
 								}
 								// If still equal to impact point, try Center of Mass
-								if (PivotWorld.Equals(Hit.ImpactPoint, KINDA_SMALL_NUMBER))
+								if (PivotWorld.Equals(PhysicsHit.ImpactPoint, KINDA_SMALL_NUMBER))
 								{
 									PivotWorld = Prim->GetCenterOfMass();
 								}
