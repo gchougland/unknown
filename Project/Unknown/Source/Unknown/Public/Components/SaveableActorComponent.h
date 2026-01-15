@@ -36,6 +36,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Save")
 	bool bSavePhysicsState = true;
 
+	// Dimension instance ID this actor belongs to (empty for main world actors)
+	UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category="Save|Dimension")
+	FGuid DimensionInstanceId;
+
 	// Get the persistent ID (generates one if not set)
 	UFUNCTION(BlueprintPure, Category="Save")
 	FGuid GetPersistentId() const { return PersistentId; }
@@ -43,6 +47,18 @@ public:
 	// Set the persistent ID (used when restoring from save)
 	UFUNCTION(BlueprintCallable, Category="Save")
 	void SetPersistentId(const FGuid& NewId) { PersistentId = NewId; }
+
+	// Set dimension instance ID (used to tag actors in dimensions)
+	UFUNCTION(BlueprintCallable, Category="Save|Dimension")
+	void SetDimensionInstanceId(const FGuid& InstanceId) { DimensionInstanceId = InstanceId; }
+
+	// Get dimension instance ID
+	UFUNCTION(BlueprintPure, Category="Save|Dimension")
+	FGuid GetDimensionInstanceId() const { return DimensionInstanceId; }
+
+	// Check if actor belongs to a dimension
+	UFUNCTION(BlueprintPure, Category="Save|Dimension")
+	bool BelongsToDimension() const { return DimensionInstanceId.IsValid(); }
 
 	// Static helper to find an actor by GUID in the world
 	UFUNCTION(BlueprintCallable, Category="Save")

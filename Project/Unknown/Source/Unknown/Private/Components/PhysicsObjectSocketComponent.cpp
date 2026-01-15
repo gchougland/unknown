@@ -176,6 +176,27 @@ void UPhysicsObjectSocketComponent::OnSocketEndOverlap(UPrimitiveComponent* Over
 		return;
 	}
 
+	// If the item that left is the currently socketed item, release it
+	if (SocketedItem.IsValid() && SocketedItem.Get() == ItemPickup)
+	{
+		UPrimitiveComponent* ItemMesh = ItemPickup->Mesh;
+		if (ItemMesh)
+		{
+			// Re-enable physics when item leaves trigger box
+			ItemMesh->SetSimulatePhysics(true);
+			ItemMesh->SetEnableGravity(true);
+		}
+
+		// Broadcast delegate before clearing reference
+		OnItemReleased.Broadcast(ItemPickup);
+
+		// Clear socketed item reference
+		SocketedItem = nullptr;
+
+		// Disable tick
+		SetComponentTickEnabled(false);
+	}
+
 	// If the item that left is the one that was manually released, clear the release tracking
 	// This allows reattachment when the item re-enters
 	if (ManuallyReleasedItem.IsValid() && ManuallyReleasedItem.Get() == ItemPickup)

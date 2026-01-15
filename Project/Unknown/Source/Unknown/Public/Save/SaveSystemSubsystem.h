@@ -76,6 +76,24 @@ public:
 	// Check for and create pending new game save (called after level loads)
 	void CheckAndCreatePendingNewGameSave();
 
+	// Save dimension instance actor states
+	UFUNCTION(BlueprintCallable, Category="SaveSystem|Dimensions")
+	bool SaveDimensionInstance(FGuid InstanceId);
+
+	// Load dimension instance actor states
+	UFUNCTION(BlueprintCallable, Category="SaveSystem|Dimensions")
+	bool LoadDimensionInstance(FGuid InstanceId);
+
+	// Get all actors belonging to a dimension
+	TArray<AActor*> GetActorsForDimension(UWorld* World, FGuid InstanceId) const;
+
+	// Restore cartridge instance IDs from saved dimension data
+	// This ensures cartridges have the correct instance IDs before they trigger dimension loading
+	void RestoreCartridgeInstanceIds(UWorld* World, class UGameSaveData* SaveData, class AFirstPersonCharacter* PlayerCharacter);
+
+	// Restore loaded dimension if one was loaded when saving
+	void RestoreLoadedDimension(UWorld* World, class UGameSaveData* SaveData, FVector PlayerLocation = FVector::ZeroVector, FRotator PlayerRotation = FRotator::ZeroRotator, bool bRestorePlayerPosition = false, TFunction<void()> OnComplete = nullptr);
+
 private:
 	// Internal function to perform the actual loading after fade completes
 	bool LoadGameAfterFade(const FString& SlotId);
@@ -105,6 +123,10 @@ public:
 	// This ensures the baseline is preserved across saves
 	UPROPERTY()
 	class UGameSaveData* CurrentSaveData;
+
+	// Get current save data (for checking if save is loaded)
+	UFUNCTION(BlueprintPure, Category="SaveSystem")
+	class UGameSaveData* GetCurrentSaveData() const { return CurrentSaveData; }
 	
 	// Current slot ID and save name for the running save game
 	FString CurrentSlotId;

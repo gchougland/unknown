@@ -1,6 +1,8 @@
 #include "Save/SaveSystemSubsystem.h"
 #include "Save/GameSaveData.h"
 #include "Save/SaveSystemHelpers.h"
+#include "Save/SaveSystemDimensionHelpers.h"
+#include "Dimensions/DimensionManagerSubsystem.h"
 #include "Player/FirstPersonCharacter.h"
 #include "Player/FirstPersonPlayerController.h"
 #include "UI/LoadingFadeWidget.h"
@@ -12,7 +14,12 @@
 #include "Inventory/StorageSerialization.h"
 #include "Inventory/ItemDefinition.h"
 #include "Inventory/ItemPickup.h"
+#include "Dimensions/DimensionCartridgeHelpers.h"
+#include "Dimensions/DimensionManagerSubsystem.h"
+#include "Dimensions/PortalDevice.h"
 #include "Components/SaveableActorComponent.h"
+#include "Components/PhysicsObjectSocketComponent.h"
+#include "EngineUtils.h"
 #include "Components/PrimitiveComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
@@ -180,6 +187,14 @@ bool USaveSystemSubsystem::SaveGame(const FString& SlotId, const FString& SaveNa
 		SaveGameInstance->LevelPackagePath = CurrentSaveData->LevelPackagePath;
 		SaveGameInstance->BaselineActorIds = CurrentSaveData->BaselineActorIds;
 		
+		// Copy dimension instance data - this preserves all dimension states across save slots
+		SaveGameInstance->DimensionInstances = CurrentSaveData->DimensionInstances;
+		SaveGameInstance->LoadedDimensionInstanceId = CurrentSaveData->LoadedDimensionInstanceId;
+		
+		UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Copied dimension instance data to new save slot: %d dimension instances, loaded dimension: %s"), 
+			SaveGameInstance->DimensionInstances.Num(), 
+			SaveGameInstance->LoadedDimensionInstanceId.IsValid() ? *SaveGameInstance->LoadedDimensionInstanceId.ToString() : TEXT("None"));
+		
 		// Cache previous actor states from current save
 		for (const FActorStateSaveData& PreviousState : CurrentSaveData->ActorStates)
 		{
@@ -238,7 +253,7 @@ bool USaveSystemSubsystem::SaveGame(const FString& SlotId, const FString& SaveNa
 		SaveGameInstance->PlayerData.CurrentHunger = HungerComp->GetCurrentHunger();
 		SaveGameInstance->PlayerData.MaxHunger = HungerComp->GetMaxHunger();
 	}
-
+	
 	// Save inventory
 	if (UInventoryComponent* InventoryComp = PlayerCharacter->GetInventory())
 	{
@@ -372,6 +387,54 @@ bool USaveSystemSubsystem::SaveGame(const FString& SlotId, const FString& SaveNa
 	UE_LOG(LogTemp, Display, TEXT("[SaveSystem] Saving level package path: %s (original: %s, MapName: %s)"), 
 		*NormalizedPath, *LevelPackagePath, *World->GetMapName());
 
+	// Save which dimension instance is currently loaded (if any)
+	// Note: If a dimension was loaded but unloaded before this save, LoadedDimensionInstanceId
+	// may have already been set when the dimension was saved. We should preserve that value.
+	UGameInstance* GameInstance = World->GetGameInstance();
+	if (GameInstance)
+	{
+		UDimensionManagerSubsystem* DimensionManager = GameInstance->GetSubsystem<UDimensionManagerSubsystem>();
+		if (DimensionManager)
+		{
+			// Save player's dimension instance ID (which dimension the player is currently in)
+			SaveGameInstance->PlayerData.PlayerDimensionInstanceId = DimensionManager->GetPlayerDimensionInstanceId();
+			if (SaveGameInstance->PlayerData.PlayerDimensionInstanceId.IsValid())
+			{
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Saved player dimension instance ID: %s"), 
+					*SaveGameInstance->PlayerData.PlayerDimensionInstanceId.ToString());
+			}
+			
+			// Save loaded dimension instance ID and dimension state
+			if (DimensionManager->IsDimensionLoaded())
+			{
+				// Dimension is currently loaded - save its instance ID
+				FGuid CurrentInstanceId = DimensionManager->GetCurrentInstanceId();
+				SaveGameInstance->LoadedDimensionInstanceId = CurrentInstanceId;
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Saved loaded dimension instance: %s"), 
+					*SaveGameInstance->LoadedDimensionInstanceId.ToString());
+				
+				// CRITICAL: Save the dimension instance state (actor states, baseline, etc.)
+				// This ensures dimension state is saved when saving through pause menu
+				SaveDimensionInstance(CurrentInstanceId);
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Saved dimension instance state for %s"), 
+					*CurrentInstanceId.ToString());
+			}
+			else if (!SaveGameInstance->LoadedDimensionInstanceId.IsValid())
+			{
+				// Dimension is not loaded AND we don't have a saved value - clear it
+				SaveGameInstance->LoadedDimensionInstanceId = FGuid();
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] No dimension loaded when saving"));
+			}
+			else
+			{
+				// Dimension is not currently loaded, but we have a saved value from when it was saved
+				// Preserve it - this means a dimension was loaded when saving but unloaded before main save
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Dimension not currently loaded, but preserving saved loaded dimension instance: %s"), 
+					*SaveGameInstance->LoadedDimensionInstanceId.ToString());
+			}
+		}
+	}
+
 	// === Unified Actor State Tracking ===
 	// Note: PreviousActorStates was already cached above when loading the save
 	// Save all actors with SaveableActorComponent and their current state
@@ -390,6 +453,15 @@ bool USaveSystemSubsystem::SaveGame(const FString& SlotId, const FString& SaveNa
 		USaveableActorComponent* SaveableComp = Actor->FindComponentByClass<USaveableActorComponent>();
 		if (!SaveableComp)
 		{
+			continue;
+		}
+
+		// CRITICAL: Skip actors that belong to a dimension - they are saved separately in DimensionInstances
+		// Dimension actors should NEVER be saved to the main world's ActorStates
+		FGuid ActorDimensionInstanceId = SaveableComp->GetDimensionInstanceId();
+		if (ActorDimensionInstanceId.IsValid())
+		{
+			// This actor belongs to a dimension - skip it
 			continue;
 		}
 
@@ -786,6 +858,17 @@ bool USaveSystemSubsystem::LoadGameAfterFade(const FString& SlotId)
 			UE_LOG(LogTemp, Error, TEXT("[SaveSystem] Failed to create temp save!"));
 		}
 			
+			// Ensure fade widget is black before opening level to prevent flash
+			// The widget should already be black from the fade-out, but ensure it stays black
+			APlayerController* PC = UGameplayStatics::GetPlayerController(World, 0);
+			AFirstPersonPlayerController* FirstPersonPC = Cast<AFirstPersonPlayerController>(PC);
+			if (FirstPersonPC && FirstPersonPC->LoadingFadeWidget)
+			{
+				// Force opacity to 1.0 (fully black) before level transition
+				FirstPersonPC->LoadingFadeWidget->SetOpacity(1.0f);
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Set fade widget to black before level transition"));
+			}
+			
 			// Open the level - player position will be restored after level loads
 			UGameplayStatics::OpenLevel(World, *LevelName);
 			
@@ -834,8 +917,20 @@ bool USaveSystemSubsystem::LoadGameAfterFade(const FString& SlotId)
 		RestoreRotation = SaveGameInstance->PlayerRotation;
 	}
 	
-	PlayerCharacter->SetActorLocation(RestoreLocation);
-	PlayerCharacter->SetActorRotation(RestoreRotation);
+	// If player was in a dimension when saving, delay position restoration until dimension loads
+	// This prevents the player from spawning in main world before dimension appears
+	bool bPlayerWasInDimension = SaveGameInstance->LoadedDimensionInstanceId.IsValid();
+	if (bPlayerWasInDimension)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Player was in dimension when saving - delaying position restoration until dimension loads"));
+		// Position will be restored after dimension loads (via RestoreLoadedDimension callback)
+	}
+	else
+	{
+		// Player was in main world - restore position immediately
+		PlayerCharacter->SetActorLocation(RestoreLocation);
+		PlayerCharacter->SetActorRotation(RestoreRotation);
+	}
 
 	// Only restore new save data if it exists
 	if (!bHasNewSaveData)
@@ -844,6 +939,20 @@ bool USaveSystemSubsystem::LoadGameAfterFade(const FString& SlotId)
 		return true;
 	}
 
+	// Restore player's dimension instance ID (which dimension the player is currently in)
+	// This must be done BEFORE dimension loading so items dropped get the correct dimension ID
+	UGameInstance* GameInstance = World->GetGameInstance();
+	if (GameInstance)
+	{
+		UDimensionManagerSubsystem* DimensionManager = GameInstance->GetSubsystem<UDimensionManagerSubsystem>();
+		if (DimensionManager && SaveGameInstance->PlayerData.PlayerDimensionInstanceId.IsValid())
+		{
+			DimensionManager->SetPlayerDimensionInstanceId(SaveGameInstance->PlayerData.PlayerDimensionInstanceId);
+			UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Restored player dimension instance ID: %s"), 
+				*SaveGameInstance->PlayerData.PlayerDimensionInstanceId.ToString());
+		}
+	}
+	
 	// Restore hunger stats
 	if (UHungerComponent* HungerComp = PlayerCharacter->GetHunger())
 	{
@@ -1070,16 +1179,64 @@ bool USaveSystemSubsystem::LoadGameAfterFade(const FString& SlotId)
 		ActorRestoredCount++;
 	}
 	
-	
-	// Fade in after loading completes (for same-level loads)
-	// Add a small delay to ensure everything is visually settled before fading in
-	if (World)
+	// Restore cartridge instance IDs from saved dimension data
+	// This ensures cartridges have the correct instance IDs before they trigger dimension loading
+	if (SaveGameInstance && PlayerCharacter)
 	{
-		FTimerHandle FadeInTimer;
-		World->GetTimerManager().SetTimer(FadeInTimer, [this]()
+		RestoreCartridgeInstanceIds(World, SaveGameInstance, PlayerCharacter);
+	}
+
+	// NOTE: Dimension restoration and fade-in are handled by RestorePlayerPositionAfterLevelLoad
+	// when a level transition occurs. For same-level loads, we handle it here.
+	// But if we're doing a level transition, we skip this to avoid double fade-in.
+	// The level transition path will handle dimension restoration via RestorePlayerPositionAfterLevelLoad.
+	
+	// Check if we're doing a level transition (temp save exists means level transition is happening)
+	FString TempSlotName = TEXT("_TEMP_RESTORE_POSITION_");
+	bool bLevelTransition = UGameplayStatics::DoesSaveGameExist(TempSlotName, 0);
+	
+	if (!bLevelTransition)
+	{
+		// Same-level load - handle dimension restoration and fade-in here
+		if (SaveGameInstance && SaveGameInstance->LoadedDimensionInstanceId.IsValid())
 		{
-			FadeInAfterLoad();
-		}, 0.2f, false); // 0.2 second delay before fading in
+			UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Will restore loaded dimension instance: %s (same-level load)"), 
+				*SaveGameInstance->LoadedDimensionInstanceId.ToString());
+			FTimerHandle RestoreDimensionTimer;
+			
+			// Store player position/rotation for restoration after dimension loads
+			FVector SavedPlayerLocation = RestoreLocation;
+			FRotator SavedPlayerRotation = RestoreRotation;
+			
+			// Fade in after dimension loads and player position is restored
+			TFunction<void()> FadeInCallback = [this]()
+			{
+				FadeInAfterLoad();
+			};
+			
+			World->GetTimerManager().SetTimer(RestoreDimensionTimer, [this, World, SaveGameInstance, SavedPlayerLocation, SavedPlayerRotation, FadeInCallback]()
+			{
+				RestoreLoadedDimension(World, SaveGameInstance, SavedPlayerLocation, SavedPlayerRotation, true, FadeInCallback);
+			}, 0.2f, false); // Reduced delay: 0.2 seconds should be enough for cartridges to restore
+		}
+		else
+		{
+			// No dimension to load - fade in after loading completes (for same-level loads)
+			// Add a small delay to ensure everything is visually settled before fading in
+			if (World)
+			{
+				FTimerHandle FadeInTimer;
+				World->GetTimerManager().SetTimer(FadeInTimer, [this]()
+				{
+					FadeInAfterLoad();
+				}, 0.2f, false); // 0.2 second delay before fading in
+			}
+		}
+	}
+	else
+	{
+		// Level transition - RestorePlayerPositionAfterLevelLoad will handle dimension restoration and fade-in
+		UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Level transition detected - dimension restoration will be handled by RestorePlayerPositionAfterLevelLoad"));
 	}
 	
 	return true;
@@ -1351,6 +1508,22 @@ bool USaveSystemSubsystem::CreateNewGameSave(const FString& SlotId, const FStrin
 		SaveGameInstance->PlayerData.CurrentHunger = HungerComp->GetCurrentHunger();
 		SaveGameInstance->PlayerData.MaxHunger = HungerComp->GetMaxHunger();
 	}
+	
+	// Save player's dimension instance ID (which dimension the player is currently in)
+	UGameInstance* GameInstance = World->GetGameInstance();
+	if (GameInstance)
+	{
+		UDimensionManagerSubsystem* DimensionManager = GameInstance->GetSubsystem<UDimensionManagerSubsystem>();
+		if (DimensionManager)
+		{
+			SaveGameInstance->PlayerData.PlayerDimensionInstanceId = DimensionManager->GetPlayerDimensionInstanceId();
+			if (SaveGameInstance->PlayerData.PlayerDimensionInstanceId.IsValid())
+			{
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Saved player dimension instance ID: %s"), 
+					*SaveGameInstance->PlayerData.PlayerDimensionInstanceId.ToString());
+			}
+		}
+	}
 
 	// Save inventory
 	if (UInventoryComponent* InventoryComp = PlayerCharacter->GetInventory())
@@ -1572,8 +1745,16 @@ void USaveSystemSubsystem::FadeInAfterLoad()
 	AFirstPersonPlayerController* FirstPersonPC = Cast<AFirstPersonPlayerController>(PC);
 	if (FirstPersonPC && FirstPersonPC->LoadingFadeWidget)
 	{
-		// Fade in smoothly (1.0 second) to reveal the loaded game
-		FirstPersonPC->LoadingFadeWidget->FadeIn(1.0f);
+		UE_LOG(LogTemp, Log, TEXT("[SaveSystem] FadeInAfterLoad called - starting fade-in"));
+		// Fade in smoothly (2.0 seconds) to reveal the loaded game
+		// Longer duration ensures player position is fully restored before fade completes
+		FirstPersonPC->LoadingFadeWidget->FadeIn(3.0f);
+	}
+	else
+	{
+		ULoadingFadeWidget* WidgetPtr = FirstPersonPC ? FirstPersonPC->LoadingFadeWidget.Get() : nullptr;
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] FadeInAfterLoad called but widget not available (PC=%p, Widget=%p)"), 
+			FirstPersonPC, WidgetPtr);
 	}
 }
 
@@ -1636,6 +1817,501 @@ void USaveSystemSubsystem::CheckAndCreatePendingNewGameSave()
 				break; // Only handle one pending save at a time
 			}
 		}
+	}
+}
+
+bool USaveSystemSubsystem::SaveDimensionInstance(FGuid InstanceId)
+{
+	if (!InstanceId.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Cannot save dimension: Invalid instance ID"));
+		return false;
+	}
+	
+	// If CurrentSaveData doesn't exist, create a temporary one in memory
+	// This allows dimension saves to work even if no save slot has been loaded/created yet
+	if (!CurrentSaveData)
+	{
+		UWorld* World = GetWorld();
+		if (!World)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Cannot save dimension: World is null"));
+			return false;
+		}
+		
+		// Create a temporary save data in memory (won't be saved to disk until SaveGame() is called)
+		CurrentSaveData = Cast<UGameSaveData>(UGameplayStatics::CreateSaveGameObject(UGameSaveData::StaticClass()));
+		if (!CurrentSaveData)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[SaveSystem] Cannot save dimension: Failed to create save game object"));
+			return false;
+		}
+		
+		// Set level path
+		FString LevelPackagePath = World->GetMapName();
+		CurrentSaveData->LevelPackagePath = LevelPackagePath;
+		
+		UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Created temporary save data for dimension save (no save slot loaded yet)"));
+	}
+       
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Cannot save dimension: World is null"));
+		return false;
+	}
+       
+	UGameInstance* GameInstance = World->GetGameInstance();
+	if (!GameInstance)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Cannot save dimension: GameInstance is null"));
+		return false;
+	}
+       
+	UDimensionManagerSubsystem* DimensionManager = GameInstance->GetSubsystem<UDimensionManagerSubsystem>();
+	if (!DimensionManager)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Cannot save dimension: DimensionManager not found"));
+		return false;
+	}
+       
+	UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Saving dimension instance %s"), *InstanceId.ToString());
+	
+	// Save dimension instance to CurrentSaveData (don't save to disk yet - SaveGame() will handle it)
+	// Pass empty SlotName since we're not saving to disk here
+	bool bSuccess = SaveSystemDimensionHelpers::SaveDimensionInstance(World, CurrentSaveData, DimensionManager, InstanceId, FString());
+	
+	if (!bSuccess)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Failed to save dimension instance %s"), *InstanceId.ToString());
+	}
+	
+	return bSuccess;
+}
+
+bool USaveSystemSubsystem::LoadDimensionInstance(FGuid InstanceId)
+{
+	if (!InstanceId.IsValid() || !CurrentSaveData)
+	{
+		return false;
+	}
+       
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+       
+	UGameInstance* GameInstance = World->GetGameInstance();
+	if (!GameInstance)
+	{
+		return false;
+	}
+       
+	UDimensionManagerSubsystem* DimensionManager = GameInstance->GetSubsystem<UDimensionManagerSubsystem>();
+	if (!DimensionManager)
+	{
+		return false;
+	}
+       
+	return SaveSystemDimensionHelpers::LoadDimensionInstance(World, CurrentSaveData, DimensionManager, InstanceId);
+}
+
+TArray<AActor*> USaveSystemSubsystem::GetActorsForDimension(UWorld* World, FGuid InstanceId) const
+{
+	TArray<AActor*> DimensionActors;
+
+	if (!World || !InstanceId.IsValid())
+	{
+		return DimensionActors;
+	}
+
+	for (TActorIterator<AActor> ActorIterator(World); ActorIterator; ++ActorIterator)
+	{
+		AActor* Actor = *ActorIterator;
+		if (!Actor)
+		{
+			continue;
+		}
+
+		USaveableActorComponent* SaveableComp = Actor->FindComponentByClass<USaveableActorComponent>();
+		if (SaveableComp && SaveableComp->GetDimensionInstanceId() == InstanceId)
+		{
+			DimensionActors.Add(Actor);
+		}
+	}
+
+	return DimensionActors;
+}
+
+void USaveSystemSubsystem::RestoreCartridgeInstanceIds(UWorld* World, UGameSaveData* SaveData, AFirstPersonCharacter* PlayerCharacter)
+{
+	if (!World || !SaveData || !PlayerCharacter)
+	{
+		return;
+	}
+
+	UInventoryComponent* InventoryComp = PlayerCharacter->GetInventory();
+	if (!InventoryComp)
+	{
+		return;
+	}
+
+	// Loop through all saved dimension instances and restore their instance IDs to cartridges
+	for (const FDimensionInstanceSaveData& DimSaveData : SaveData->DimensionInstances)
+	{
+		if (!DimSaveData.InstanceId.IsValid() || !DimSaveData.CartridgeId.IsValid())
+		{
+			continue;
+		}
+
+		// Find cartridges in inventory with matching CartridgeId
+		const TArray<FItemEntry>& Entries = InventoryComp->GetEntries();
+		for (int32 i = 0; i < Entries.Num(); ++i)
+		{
+			FItemEntry Entry = Entries[i];
+			UDimensionCartridgeData* CartridgeData = UDimensionCartridgeHelpers::GetCartridgeDataFromItemEntry(Entry);
+			if (CartridgeData && CartridgeData->GetCartridgeId() == DimSaveData.CartridgeId)
+			{
+				// Update the cartridge's instance ID from saved dimension data
+				if (!CartridgeData->InstanceData)
+				{
+					CartridgeData->InstanceData = NewObject<UDimensionInstanceData>(CartridgeData);
+				}
+				
+				CartridgeData->InstanceData->InstanceId = DimSaveData.InstanceId;
+				CartridgeData->InstanceData->CartridgeId = DimSaveData.CartridgeId;
+				CartridgeData->InstanceData->WorldPosition = DimSaveData.WorldPosition;
+				CartridgeData->InstanceData->Stability = DimSaveData.Stability;
+				CartridgeData->InstanceData->bIsLoaded = false;
+
+				// Update the ItemEntry with the new cartridge data
+				UDimensionCartridgeHelpers::SetCartridgeDataInItemEntry(Entry, CartridgeData);
+
+				// Remove the old entry and add the updated one
+				FGuid ItemId = Entry.ItemId;
+				if (InventoryComp->RemoveById(ItemId))
+				{
+					InventoryComp->TryAdd(Entry);
+				}
+
+				// Also update the ItemPickup actor if it exists in the world
+				for (TActorIterator<AItemPickup> ActorItr(World); ActorItr; ++ActorItr)
+				{
+					AItemPickup* ItemPickup = *ActorItr;
+					if (ItemPickup && ItemPickup->GetItemEntry().ItemId == ItemId)
+					{
+						ItemPickup->SetItemEntry(Entry);
+						UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Restored instance ID %s to cartridge %s"), 
+							*DimSaveData.InstanceId.ToString(), *DimSaveData.CartridgeId.ToString());
+						break;
+					}
+				}
+
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Restored instance ID %s to cartridge %s in inventory"), 
+					*DimSaveData.InstanceId.ToString(), *DimSaveData.CartridgeId.ToString());
+				break; // Found the cartridge, move to next dimension instance
+			}
+		}
+	}
+}
+
+void USaveSystemSubsystem::RestoreLoadedDimension(UWorld* World, UGameSaveData* SaveData, FVector PlayerLocation, FRotator PlayerRotation, bool bRestorePlayerPosition, TFunction<void()> OnComplete)
+{
+	if (!World || !SaveData || !SaveData->LoadedDimensionInstanceId.IsValid())
+	{
+		return;
+	}
+
+	UGameInstance* GameInstance = World->GetGameInstance();
+	if (!GameInstance)
+	{
+		return;
+	}
+
+	UDimensionManagerSubsystem* DimensionManager = GameInstance->GetSubsystem<UDimensionManagerSubsystem>();
+	if (!DimensionManager)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Cannot restore dimension: DimensionManager not found"));
+		return;
+	}
+
+	// Find the saved dimension instance data
+	const FDimensionInstanceSaveData* DimSaveData = nullptr;
+	for (const FDimensionInstanceSaveData& DimData : SaveData->DimensionInstances)
+	{
+		if (DimData.InstanceId == SaveData->LoadedDimensionInstanceId)
+		{
+			DimSaveData = &DimData;
+			break;
+		}
+	}
+
+	if (!DimSaveData)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Cannot restore dimension: Saved dimension instance %s not found in save data"), 
+			*SaveData->LoadedDimensionInstanceId.ToString());
+		return;
+	}
+
+	// Find the cartridge with matching CartridgeId
+	APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(World, 0);
+	AFirstPersonCharacter* PlayerCharacter = Cast<AFirstPersonCharacter>(PlayerPawn);
+	if (!PlayerCharacter)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Cannot restore dimension: Player character not found"));
+		return;
+	}
+
+	UInventoryComponent* InventoryComp = PlayerCharacter->GetInventory();
+	if (!InventoryComp)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Cannot restore dimension: Inventory component not found"));
+		return;
+	}
+
+	// Find cartridge in inventory OR in portal device sockets
+	// First check portal device sockets (cartridge might be socketed)
+	bool bFoundCartridge = false;
+	APortalDevice* FoundPortalDevice = nullptr;
+	FGuid FoundCartridgeId;
+	
+	// Check portal devices first
+	for (TActorIterator<APortalDevice> ActorItr(World); ActorItr; ++ActorItr)
+	{
+		APortalDevice* PortalDevice = *ActorItr;
+		if (!PortalDevice || !PortalDevice->CartridgeSocket)
+		{
+			continue;
+		}
+
+		AItemPickup* SocketedItem = PortalDevice->CartridgeSocket->GetSocketedItem();
+		if (SocketedItem)
+		{
+			UDimensionCartridgeData* CartridgeData = UDimensionCartridgeHelpers::GetCartridgeDataFromItem(SocketedItem);
+			if (CartridgeData && CartridgeData->GetCartridgeId() == DimSaveData->CartridgeId)
+			{
+				bFoundCartridge = true;
+				FoundPortalDevice = PortalDevice;
+				FoundCartridgeId = CartridgeData->GetCartridgeId();
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Found cartridge in portal device socket"));
+				break;
+			}
+		}
+	}
+
+	// If not found in socket, check inventory
+	if (!bFoundCartridge)
+	{
+		const TArray<FItemEntry>& Entries = InventoryComp->GetEntries();
+		for (const FItemEntry& Entry : Entries)
+		{
+			UDimensionCartridgeData* CartridgeData = UDimensionCartridgeHelpers::GetCartridgeDataFromItemEntry(Entry);
+			if (CartridgeData && CartridgeData->GetCartridgeId() == DimSaveData->CartridgeId)
+			{
+				bFoundCartridge = true;
+				FoundCartridgeId = CartridgeData->GetCartridgeId();
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Found cartridge in inventory"));
+				break;
+			}
+		}
+	}
+
+	if (!bFoundCartridge)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Cannot restore dimension: Cartridge with ID %s not found in inventory or sockets"), 
+			*DimSaveData->CartridgeId.ToString());
+		return;
+	}
+
+	// If cartridge is in a socket, load the dimension
+	if (FoundPortalDevice)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Cartridge found in portal device socket - ensuring dimension is loaded"));
+		
+		// Check if dimension is already loaded
+		if (DimensionManager->IsDimensionLoaded())
+		{
+			FGuid CurrentInstanceId = DimensionManager->GetCurrentInstanceId();
+			if (CurrentInstanceId == SaveData->LoadedDimensionInstanceId)
+			{
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Dimension instance %s is already loaded"), 
+					*CurrentInstanceId.ToString());
+				
+				// Dimension already loaded - ensure screen stays black before restoring player position
+				APlayerController* PC = UGameplayStatics::GetPlayerController(World, 0);
+				AFirstPersonPlayerController* FirstPersonPC = Cast<AFirstPersonPlayerController>(PC);
+				if (FirstPersonPC && FirstPersonPC->LoadingFadeWidget)
+				{
+					// Force opacity to 1.0 (fully black) to prevent flash during teleport
+					FirstPersonPC->LoadingFadeWidget->SetOpacity(1.0f);
+					UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Ensured fade widget is black before restoring player position (already-loaded)"));
+				}
+				
+				// Dimension already loaded - restore player position immediately
+				if (bRestorePlayerPosition && !PlayerLocation.IsNearlyZero())
+				{
+					PlayerCharacter->SetActorLocation(PlayerLocation);
+					PlayerCharacter->SetActorRotation(PlayerRotation);
+					if (APlayerController* PlayerController = Cast<APlayerController>(PlayerCharacter->GetController()))
+					{
+						PlayerController->SetControlRotation(PlayerRotation);
+					}
+					UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Restored player position in already-loaded dimension: %s"), *PlayerLocation.ToString());
+					
+					// Ensure fade widget stays black during delay
+					if (FirstPersonPC && FirstPersonPC->LoadingFadeWidget)
+					{
+						FirstPersonPC->LoadingFadeWidget->SetOpacity(1.0f);
+					}
+					
+					// Wait a bit before fading in to ensure position is settled
+					// Use shared pointer to keep timer handle alive
+					TSharedPtr<FTimerHandle> FadeInDelayTimer = MakeShared<FTimerHandle>();
+					World->GetTimerManager().SetTimer(*FadeInDelayTimer, [OnComplete, FadeInDelayTimer, World]()
+					{
+						UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Fade-in delay timer fired (already-loaded) - calling fade-in callback"));
+						// Call completion callback (fade in) after delay
+						if (OnComplete)
+						{
+							OnComplete();
+						}
+						// Clear the timer handle
+						if (World && FadeInDelayTimer.IsValid())
+						{
+							World->GetTimerManager().ClearTimer(*FadeInDelayTimer);
+						}
+					}, 0.9f, false); // Wait 0.9 seconds before fade-in (0.7s base + 0.2s extra to ensure player position is fully settled)
+					UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Set fade-in delay timer for 0.9 seconds (already-loaded dimension)"));
+				}
+				else if (OnComplete)
+				{
+					// No player position to restore, but we still need to fade in
+					OnComplete();
+				}
+				return;
+			}
+		}
+		
+		// Trigger dimension loading
+		FoundPortalDevice->OpenPortal(FoundCartridgeId);
+		UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Triggered dimension loading for instance %s"), 
+			*SaveData->LoadedDimensionInstanceId.ToString());
+		
+		// If player was in dimension when saving, wait for dimension to load before restoring position
+		// Poll for dimension to be loaded since we can't easily bind to the delegate from here
+		if (bRestorePlayerPosition && !PlayerLocation.IsNearlyZero())
+		{
+			FGuid TargetInstanceId = SaveData->LoadedDimensionInstanceId;
+			
+			// Use a shared pointer to track if we've already restored position and store the timer handle
+			TSharedPtr<bool> bPositionRestored = MakeShareable(new bool(false));
+			TSharedPtr<FTimerHandle> PollTimerHandle = MakeShareable(new FTimerHandle());
+			
+			// Poll every 0.1 seconds until dimension is loaded
+			auto PollForDimensionLoaded = [World, PlayerLocation, PlayerRotation, OnComplete, TargetInstanceId, DimensionManager, bPositionRestored, PollTimerHandle]()
+			{
+				if (*bPositionRestored)
+				{
+					// Already restored, stop polling
+					World->GetTimerManager().ClearTimer(*PollTimerHandle);
+					return;
+				}
+				
+				if (!DimensionManager || !DimensionManager->IsDimensionLoaded())
+				{
+					return; // Keep polling
+				}
+				
+				FGuid CurrentInstanceId = DimensionManager->GetCurrentInstanceId();
+				if (CurrentInstanceId != TargetInstanceId)
+				{
+					return; // Wrong dimension, keep polling
+				}
+				
+				// Dimension is loaded! Ensure screen stays black before restoring player position
+				APlayerController* PC = UGameplayStatics::GetPlayerController(World, 0);
+				AFirstPersonPlayerController* FirstPersonPC = Cast<AFirstPersonPlayerController>(PC);
+				if (FirstPersonPC && FirstPersonPC->LoadingFadeWidget)
+				{
+					// Force opacity to 1.0 (fully black) to prevent flash during teleport
+					FirstPersonPC->LoadingFadeWidget->SetOpacity(1.0f);
+					UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Ensured fade widget is black before restoring player position"));
+				}
+				
+				// Restore player position
+				*bPositionRestored = true;
+				World->GetTimerManager().ClearTimer(*PollTimerHandle); // Stop polling
+				
+				APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(World, 0);
+				if (AFirstPersonCharacter* PlayerCharacter = Cast<AFirstPersonCharacter>(PlayerPawn))
+				{
+					PlayerCharacter->SetActorLocation(PlayerLocation);
+					PlayerCharacter->SetActorRotation(PlayerRotation);
+					if (APlayerController* PlayerController = Cast<APlayerController>(PlayerCharacter->GetController()))
+					{
+						PlayerController->SetControlRotation(PlayerRotation);
+					}
+					UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Restored player position in dimension: %s"), *PlayerLocation.ToString());
+					
+					// Ensure fade widget stays black during delay
+					if (FirstPersonPC && FirstPersonPC->LoadingFadeWidget)
+					{
+						FirstPersonPC->LoadingFadeWidget->SetOpacity(1.0f);
+					}
+					
+					// Wait a bit before fading in to ensure everything is settled
+					// Use shared pointer to keep timer handle alive
+					TSharedPtr<FTimerHandle> FadeInDelayTimer = MakeShared<FTimerHandle>();
+					World->GetTimerManager().SetTimer(*FadeInDelayTimer, [OnComplete, FadeInDelayTimer, World]()
+					{
+						UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Fade-in delay timer fired - calling fade-in callback"));
+						// Call completion callback (fade in) after additional delay
+						if (OnComplete)
+						{
+							OnComplete();
+						}
+						// Clear the timer handle
+						if (World && FadeInDelayTimer.IsValid())
+						{
+							World->GetTimerManager().ClearTimer(*FadeInDelayTimer);
+						}
+					}, 1.4f, false); // Additional 1.4 second delay before fade-in starts (1.2s base + 0.2s extra to ensure player position is fully settled)
+					UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Set fade-in delay timer for 1.4 seconds"));
+				}
+			};
+			
+			// Start polling
+			World->GetTimerManager().SetTimer(*PollTimerHandle, PollForDimensionLoaded, 0.1f, true); // Poll every 0.1 seconds
+			
+			// Also set a one-time timer to stop polling after a reasonable timeout (5 seconds)
+			FTimerHandle TimeoutTimer;
+			World->GetTimerManager().SetTimer(TimeoutTimer, [World, PollTimerHandle, OnComplete, bPositionRestored]()
+			{
+				if (!*bPositionRestored)
+				{
+					World->GetTimerManager().ClearTimer(*PollTimerHandle);
+					UE_LOG(LogTemp, Warning, TEXT("[SaveSystem] Timeout waiting for dimension to load - proceeding with fade-in"));
+					if (OnComplete)
+					{
+						OnComplete();
+					}
+				}
+			}, 5.0f, false);
+			
+			UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Waiting for dimension instance %s to load before restoring player position"), 
+				*TargetInstanceId.ToString());
+		}
+		else if (OnComplete)
+		{
+			// No player position to restore, fade in immediately (dimension will load in background)
+			OnComplete();
+		}
+	}
+	else
+	{
+		// Cartridge is in inventory but not in socket - don't auto-load
+		UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Cartridge found in inventory but not in socket - dimension will not be auto-loaded"));
 	}
 }
 

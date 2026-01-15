@@ -183,6 +183,10 @@ struct FPlayerControllerUIManager
 			PC->LoadingFadeWidget = CreateWidget<ULoadingFadeWidget>(PC, ULoadingFadeWidget::StaticClass());
 			if (PC->LoadingFadeWidget)
 			{
+				// Set to black IMMEDIATELY before adding to viewport to prevent any flash
+				// Default to black - we'll set it transparent only if we're sure it's not a level transition
+				PC->LoadingFadeWidget->SetOpacity(1.0f);
+				
 				PC->LoadingFadeWidget->AddToViewport(3000); // Highest Z-order to appear above everything during loading
 				// Fill the entire viewport
 				PC->LoadingFadeWidget->SetAnchorsInViewport(FAnchors(0.f, 0.f, 1.f, 1.f));
@@ -190,16 +194,16 @@ struct FPlayerControllerUIManager
 				PC->LoadingFadeWidget->SetVisibility(ESlateVisibility::HitTestInvisible);
 				
 				// Check if there's a temp save (indicating a level transition load or new game)
-				// If so, start black so we can fade in after restoration/save creation
+				// If so, keep it black so we can fade in after restoration/save creation
 				FString TempSlotName = TEXT("_TEMP_RESTORE_POSITION_");
 				FString NewGameSlotPrefix = TEXT("_NEWGAME_");
 				bool bShouldStartBlack = false;
 				
 				if (UGameSaveData* TempSave = Cast<UGameSaveData>(UGameplayStatics::LoadGameFromSlot(TempSlotName, 0)))
 				{
-					// Level transition load - start black so we can fade in after restoration
+					// Level transition load - keep black so we can fade in after restoration
 					bShouldStartBlack = true;
-					UE_LOG(LogTemp, Display, TEXT("[SaveSystem] LoadingFadeWidget created during level transition - starting black"));
+					UE_LOG(LogTemp, Display, TEXT("[SaveSystem] LoadingFadeWidget created during level transition - keeping black"));
 				}
 				else
 				{
@@ -214,7 +218,7 @@ struct FPlayerControllerUIManager
 						FString FileName = FPaths::GetBaseFilename(SaveFile);
 						if (FileName.StartsWith(NewGameSlotPrefix))
 						{
-							// New game load - start black so we can fade in after save creation
+							// New game load - keep black so we can fade in after save creation
 							bShouldStartBlack = true;
 							break;
 						}
@@ -223,13 +227,14 @@ struct FPlayerControllerUIManager
 				
 				if (bShouldStartBlack)
 				{
-					// Level transition or new game - start black so we can fade in after restoration/save creation
-					PC->LoadingFadeWidget->SetOpacity(1.0f);
+					// Level transition or new game - keep black (already set above)
+					UE_LOG(LogTemp, Log, TEXT("[SaveSystem] LoadingFadeWidget kept black (opacity 1.0) for level transition"));
 				}
 				else
 				{
-					// Normal level load - start invisible
+					// Normal gameplay - set to transparent (not a level transition)
 					PC->LoadingFadeWidget->SetOpacity(0.0f);
+					UE_LOG(LogTemp, Log, TEXT("[SaveSystem] LoadingFadeWidget set to transparent (opacity 0.0) for normal gameplay"));
 				}
 			}
 		}

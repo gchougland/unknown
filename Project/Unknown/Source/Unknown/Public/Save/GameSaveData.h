@@ -22,6 +22,10 @@ struct FPlayerSaveData
 	
 	UPROPERTY(SaveGame)
 	float MaxHunger = 100.0f;
+	
+	// Dimension instance ID the player is currently in (empty if in main world)
+	UPROPERTY(SaveGame)
+	FGuid PlayerDimensionInstanceId;
 };
 
 // Hotbar save data
@@ -130,6 +134,33 @@ struct FActorStateSaveData
 	float StorageMaxVolume = 60.0f;
 };
 
+// Dimension instance save data
+USTRUCT()
+struct FDimensionInstanceSaveData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(SaveGame)
+	FGuid InstanceId;
+
+	UPROPERTY(SaveGame)
+	FGuid CartridgeId;
+
+	UPROPERTY(SaveGame)
+	FString DimensionDefinitionPath;
+
+	UPROPERTY(SaveGame)
+	FVector WorldPosition;
+
+	UPROPERTY(SaveGame)
+	float Stability;
+
+	UPROPERTY(SaveGame)
+	TArray<FActorStateSaveData> ActorStates;
+
+	UPROPERTY(SaveGame)
+	TArray<FGuid> BaselineActorIds;
+};
 
 UCLASS()
 class UNKNOWN_API UGameSaveData : public USaveGame
@@ -180,6 +211,14 @@ public:
 	// Used to detect which actors have been removed/destroyed
 	UPROPERTY(SaveGame, VisibleAnywhere, Category="SaveData")
 	TArray<FGuid> BaselineActorIds;
+
+	// Saved dimension instances
+	UPROPERTY(SaveGame, VisibleAnywhere, Category="SaveData|Dimensions")
+	TArray<FDimensionInstanceSaveData> DimensionInstances;
+
+	// Currently loaded dimension instance ID (if any dimension is loaded)
+	UPROPERTY(SaveGame, VisibleAnywhere, Category="SaveData|Dimensions")
+	FGuid LoadedDimensionInstanceId;
 
 	// Get formatted timestamp string
 	UFUNCTION(BlueprintPure, Category="SaveData")

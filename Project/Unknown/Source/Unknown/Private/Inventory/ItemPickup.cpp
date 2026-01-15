@@ -1,4 +1,4 @@
-﻿#include "Inventory/ItemPickup.h"
+#include "Inventory/ItemPickup.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SaveableActorComponent.h"
 #include "UObject/ConstructorHelpers.h"
@@ -10,6 +10,8 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
+#include "Dimensions/DimensionManagerSubsystem.h"
+#include "Engine/Level.h"
 
 AItemPickup::AItemPickup(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -283,6 +285,49 @@ AItemPickup* AItemPickup::DropItemToWorld(UWorld* World, const AActor* ContextAc
     {
         Pickup->SaveableComponent = NewObject<USaveableActorComponent>(Pickup);
         Pickup->SaveableComponent->RegisterComponent();
+    }
+    
+    // Tag item with dimension instance ID if player is currently in a dimension
+    if (UGameInstance* GameInstance = World->GetGameInstance())
+    {
+        if (UDimensionManagerSubsystem* DimensionManager = GameInstance->GetSubsystem<UDimensionManagerSubsystem>())
+        {
+            FGuid PlayerDimensionId = DimensionManager->GetPlayerDimensionInstanceId();
+            if (PlayerDimensionId.IsValid())
+            {
+                ULevel* DimensionLevel = DimensionManager->GetDimensionLevel(PlayerDimensionId);
+                if (DimensionLevel)
+                {
+                    // Ensure item is spawned in dimension level
+                    ULevel* SpawnLevel = Pickup->GetLevel();
+                    if (SpawnLevel != DimensionLevel)
+                    {
+                        // Spawn in dimension level
+                        FActorSpawnParameters DimensionParams = Params;
+                        DimensionParams.OverrideLevel = DimensionLevel;
+                        
+                        // Destroy the incorrectly spawned pickup
+                        Pickup->Destroy();
+                        
+                        // Respawn in the correct level
+                        Pickup = World->SpawnActor<AItemPickup>(ActorClass, SpawnXform, DimensionParams);
+                        if (!Pickup)
+                        {
+                            return nullptr;
+                        }
+                        Pickup->SetItemEntry(Entry);
+                        if (!Pickup->SaveableComponent)
+                        {
+                            Pickup->SaveableComponent = NewObject<USaveableActorComponent>(Pickup);
+                            Pickup->SaveableComponent->RegisterComponent();
+                        }
+                    }
+                    
+                    // Tag item with dimension instance ID
+                    Pickup->SaveableComponent->SetDimensionInstanceId(PlayerDimensionId);
+                }
+            }
+        }
     }
     
     // Configure physics for dropped items: gravity ON, interactable channel BLOCK

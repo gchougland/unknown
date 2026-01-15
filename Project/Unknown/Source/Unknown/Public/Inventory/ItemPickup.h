@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
@@ -38,8 +38,40 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Pickup")
 	FGuid ItemId;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Pickup")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Pickup|CustomData")
 	TMap<FName, FString> CustomData;
+
+	// Blueprint-friendly helper functions for CustomData
+	UFUNCTION(BlueprintCallable, Category="Pickup|CustomData")
+	void SetCustomDataValue(FName Key, const FString& Value)
+	{
+		CustomData.Add(Key, Value);
+	}
+
+	UFUNCTION(BlueprintCallable, Category="Pickup|CustomData")
+	FString GetCustomDataValue(FName Key, const FString& DefaultValue = TEXT("")) const
+	{
+		const FString* FoundValue = CustomData.Find(Key);
+		return FoundValue ? *FoundValue : DefaultValue;
+	}
+
+	UFUNCTION(BlueprintCallable, Category="Pickup|CustomData")
+	bool HasCustomDataKey(FName Key) const
+	{
+		return CustomData.Contains(Key);
+	}
+
+	UFUNCTION(BlueprintCallable, Category="Pickup|CustomData")
+	void RemoveCustomDataKey(FName Key)
+	{
+		CustomData.Remove(Key);
+	}
+
+	UFUNCTION(BlueprintCallable, Category="Pickup|CustomData")
+	void ClearCustomData()
+	{
+		CustomData.Empty();
+	}
 
 	UFUNCTION(BlueprintPure, Category="Pickup")
 	UItemDefinition* GetItemDef() const { return ItemDef; }

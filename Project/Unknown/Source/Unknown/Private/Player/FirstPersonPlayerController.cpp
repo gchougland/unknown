@@ -1,4 +1,4 @@
-﻿#include "Player/FirstPersonPlayerController.h"
+#include "Player/FirstPersonPlayerController.h"
 
 #include "Player/FirstPersonCharacter.h"
 #include "Player/HungerComponent.h"
@@ -19,6 +19,7 @@
 #include "UI/LoadingFadeWidget.h"
 #include "Save/SaveSystemSubsystem.h"
 #include "Save/GameSaveData.h"
+#include "Dimensions/DimensionManagerSubsystem.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "UObject/UnrealType.h"
@@ -104,6 +105,18 @@ void AFirstPersonPlayerController::BeginPlay()
 		}
 	}
 	
+	// Ensure fade widget is black if we're doing a level transition restore
+	// This prevents flash of level before fade-in
+	FString TempSlotName = TEXT("_TEMP_RESTORE_POSITION_");
+	if (UGameplayStatics::DoesSaveGameExist(TempSlotName, 0))
+	{
+		if (LoadingFadeWidget)
+		{
+			LoadingFadeWidget->SetOpacity(1.0f);
+			UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Ensured fade widget is black at BeginPlay for level transition"));
+		}
+	}
+	
 	// Check for position restore after level load
 	// This happens when loading a save that required a level transition
 	RestorePlayerPositionAfterLevelLoad();
@@ -121,6 +134,18 @@ void AFirstPersonPlayerController::RestorePlayerPositionAfterLevelLoad()
 	FString TempSlotName = TEXT("_TEMP_RESTORE_POSITION_");
 	if (UGameSaveData* TempSave = Cast<UGameSaveData>(UGameplayStatics::LoadGameFromSlot(TempSlotName, 0)))
 	{
+		// CRITICAL: Set CurrentSaveData immediately so dimension loading can find save data
+		// This must be done BEFORE waiting for the timer, otherwise cartridges in sockets
+		// will trigger dimension loading before save data is available
+		if (UGameInstance* GameInstance = World->GetGameInstance())
+		{
+			if (USaveSystemSubsystem* SaveSystem = GameInstance->GetSubsystem<USaveSystemSubsystem>())
+			{
+				SaveSystem->CurrentSaveData = TempSave;
+				UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Set CurrentSaveData from temp save for dimension restoration"));
+			}
+		}
+
 		// Wait a bit for the player to fully spawn and level to be ready
 		FTimerHandle RestoreTimer;
 		World->GetTimerManager().SetTimer(RestoreTimer, [this, World, TempSlotName]()
@@ -363,19 +388,42 @@ void AFirstPersonPlayerController::RestorePlayerPositionAfterLevelLoad()
 							}
 						}
 
-						// Restore position
-						FVector RestoreLocation = TempSave->PlayerData.Location.IsNearlyZero() ? 
-							TempSave->PlayerLocation : TempSave->PlayerData.Location;
-						FRotator RestoreRotation = TempSave->PlayerData.Rotation.IsZero() ? 
-							TempSave->PlayerRotation : TempSave->PlayerData.Rotation;
-						
-						PlayerCharacter->SetActorLocation(RestoreLocation);
-						PlayerCharacter->SetActorRotation(RestoreRotation);
-						
-						// Also set controller rotation for first-person camera
-						SetControlRotation(RestoreRotation);
+						// Restore position (unless player was in dimension - will be restored after dimension loads)
+						bool bPlayerWasInDimension = TempSave->LoadedDimensionInstanceId.IsValid();
+						if (!bPlayerWasInDimension)
+						{
+							FVector RestoreLocation = TempSave->PlayerData.Location.IsNearlyZero() ? 
+								TempSave->PlayerLocation : TempSave->PlayerData.Location;
+							FRotator RestoreRotation = TempSave->PlayerData.Rotation.IsZero() ? 
+								TempSave->PlayerRotation : TempSave->PlayerData.Rotation;
+							
+							PlayerCharacter->SetActorLocation(RestoreLocation);
+							PlayerCharacter->SetActorRotation(RestoreRotation);
+							
+							// Also set controller rotation for first-person camera
+							SetControlRotation(RestoreRotation);
+						}
+						else
+						{
+							UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Player was in dimension when saving - position will be restored after dimension loads"));
+						}
 						
 
+						// Restore player's dimension instance ID (which dimension the player is currently in)
+						// This must be done BEFORE dimension loading so items dropped get the correct dimension ID
+						if (UGameInstance* GameInstance = World->GetGameInstance())
+						{
+							if (UDimensionManagerSubsystem* DimensionManager = GameInstance->GetSubsystem<UDimensionManagerSubsystem>())
+							{
+								if (TempSave->PlayerData.PlayerDimensionInstanceId.IsValid())
+								{
+									DimensionManager->SetPlayerDimensionInstanceId(TempSave->PlayerData.PlayerDimensionInstanceId);
+									UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Restored player dimension instance ID: %s"), 
+										*TempSave->PlayerData.PlayerDimensionInstanceId.ToString());
+								}
+							}
+						}
+						
 						// Restore hunger
 						if (UHungerComponent* HungerComp = PlayerCharacter->GetHunger())
 						{
@@ -797,24 +845,65 @@ void AFirstPersonPlayerController::RestorePlayerPositionAfterLevelLoad()
 							ActorRestoredCount++;
 						}
 						
+						// Restore cartridge instance IDs from saved dimension data
+						// This ensures cartridges have the correct instance IDs before they trigger dimension loading
+						if (UGameInstance* GameInstance = World->GetGameInstance())
+						{
+							if (USaveSystemSubsystem* SaveSystem = GameInstance->GetSubsystem<USaveSystemSubsystem>())
+							{
+								SaveSystem->RestoreCartridgeInstanceIds(World, TempSave, PlayerCharacter);
+								
+								// Restore loaded dimension if one was loaded when saving
+								// Use a delay to ensure all items and cartridges are fully restored first
+								if (TempSave->LoadedDimensionInstanceId.IsValid())
+								{
+									UE_LOG(LogTemp, Log, TEXT("[SaveSystem] Will restore loaded dimension instance: %s"), 
+										*TempSave->LoadedDimensionInstanceId.ToString());
+									FTimerHandle RestoreDimensionTimer;
+									// Get saved player position for restoration after dimension loads
+									FVector SavedPlayerLocation = TempSave->PlayerData.Location.IsNearlyZero() ? 
+										TempSave->PlayerLocation : TempSave->PlayerData.Location;
+									FRotator SavedPlayerRotation = TempSave->PlayerData.Rotation.IsZero() ? 
+										TempSave->PlayerRotation : TempSave->PlayerData.Rotation;
+									
+									// Fade in callback - only fade in after dimension loads and player position is restored
+									TFunction<void()> FadeInCallback = [this, World]()
+									{
+										if (LoadingFadeWidget)
+										{
+											// Fade in smoothly (1.5 seconds) to reveal the loaded game
+											// Longer duration ensures player position is fully restored before fade completes
+											LoadingFadeWidget->FadeIn(1.5f);
+										}
+									};
+									
+									World->GetTimerManager().SetTimer(RestoreDimensionTimer, [SaveSystem, World, TempSave, SavedPlayerLocation, SavedPlayerRotation, FadeInCallback]()
+									{
+										SaveSystem->RestoreLoadedDimension(World, TempSave, SavedPlayerLocation, SavedPlayerRotation, true, FadeInCallback);
+									}, 0.2f, false); // Reduced delay: 0.2 seconds should be enough for cartridges to restore
+								}
+								else
+								{
+									// No dimension to restore - fade in after restoration completes (for level transition loads)
+									// Add a small delay to ensure everything is visually settled before fading in
+									if (LoadingFadeWidget)
+									{
+										FTimerHandle FadeInTimer;
+										World->GetTimerManager().SetTimer(FadeInTimer, [this]()
+										{
+											if (LoadingFadeWidget)
+											{
+												// Fade in smoothly (1.5 seconds) to reveal the loaded game
+												LoadingFadeWidget->FadeIn(1.5f);
+											}
+										}, 0.2f, false); // 0.2 second delay before fading in
+									}
+								}
+							}
+						}
 						
 						// Clean up temp save
 						UGameplayStatics::DeleteGameInSlot(TempSlotName, 0);
-						
-						// Fade in after restoration completes (for level transition loads)
-						// Add a small delay to ensure everything is visually settled before fading in
-						if (LoadingFadeWidget)
-						{
-							FTimerHandle FadeInTimer;
-							World->GetTimerManager().SetTimer(FadeInTimer, [this]()
-							{
-								if (LoadingFadeWidget)
-								{
-									// Fade in smoothly (1.0 second) to reveal the loaded game
-									LoadingFadeWidget->FadeIn(1.0f);
-								}
-							}, 0.2f, false); // 0.2 second delay before fading in
-						}
 					}
 				}
 			}
