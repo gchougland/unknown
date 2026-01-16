@@ -385,6 +385,15 @@ struct FPlayerControllerTickHandler
 				PC->InteractInfoWidget->SetVisible(false);
 			}
 		}
+		// Hide highlight while using a computer
+		else if (PC->bInComputerMode)
+		{
+			PC->InteractHighlightWidget->SetVisible(false);
+			if (PC->InteractInfoWidget)
+			{
+				PC->InteractInfoWidget->SetVisible(false);
+			}
+		}
 		// Suppress highlight while holding a physics object
 		else if (PIC && PIC->IsHolding())
 		{

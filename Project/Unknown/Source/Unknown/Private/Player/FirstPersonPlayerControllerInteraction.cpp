@@ -5,6 +5,7 @@
 #include "Components/PhysicsObjectSocketComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Computers/ComputerBase.h"
+#include "Triggers/ButtonTriggerActor.h"
 #include "Engine/World.h"
 #include "Engine/EngineTypes.h"
 #include "UI/DropProgressBarWidget.h"
@@ -118,6 +119,15 @@ struct FPlayerControllerInteractionHandler
 						{
 							// Enter computer mode
 							Computer->EnterComputerMode(PC);
+							PC->bInstantUseExecuted = true;
+							return;
+						}
+
+						// Check if hit actor is a button trigger
+						if (AButtonTriggerActor* ButtonTrigger = Cast<AButtonTriggerActor>(Hit.GetActor()))
+						{
+							// Trigger the button
+							ButtonTrigger->OnInteracted();
 							PC->bInstantUseExecuted = true;
 							return;
 						}
