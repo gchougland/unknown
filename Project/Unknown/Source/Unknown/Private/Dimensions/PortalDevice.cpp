@@ -506,8 +506,7 @@ void APortalDevice::SpawnReturnPortal()
 		SpawnLocation = SpawnLocationWorld - DimensionWorldPos;
 		
 		// Face back toward player start
-		SpawnRotation = TeleportRotation;
-		SpawnRotation.Yaw += 180.0f;
+		//SpawnRotation = TeleportRotation;
 	}
 	else
 	{
